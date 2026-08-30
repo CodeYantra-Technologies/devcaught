@@ -1,0 +1,44 @@
+# Dependencies
+node_modules/
+.node_modules.lock
+
+# Build output
+dist/
+.output/
+.vercel/
+
+# Local app-builder / preview metadata
+.grok/
+.agents/
+.codex/
+.tanstack/
+AGENTS.md
+.project_id
+startup.sh
+public/__grok/
+artifacts/
+
+# Runtime data
+.data/
+data/*.db
+data/*.db-wal
+data/*.db-shm
+
+# Generated QA screenshots
+screenshots/*
+!screenshots/.gitkeep
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS / editor
+.DS_Store
+
+# Environment
+.env
+.env.*
+!.env.example
