@@ -4,7 +4,7 @@
 
 # DevCaught
 
-Everything your app sends. Caught.
+**Everything your app sends. Caught.**
 
 DevCaught is a local-first developer inbox that captures application messages during development and surfaces the information developers actually care about.
 
@@ -14,19 +14,76 @@ Point your app at a local SMTP server. DevCaught stores the mail, detects OTPs a
 
 ---
 
-## Brand assets
+## Quick start
 
-<p>
-  <img src="public/devcaught-logo-concept.png" alt="DevCaught generated logo concept" width="420">
-</p>
+DevCaught requires **Node.js 22.13.0 or later**.
 
-- Primary SVG logo: `public/devcaught-logo.svg`
-- App mark: `public/devcaught-mark.svg`
-- Generated concept: `public/devcaught-logo-concept.png`
+```bash
+git clone https://github.com/CodeYantra-Technologies/devcaught.git
+cd devcaught
+npm install
+npm run dev
+```
+
+This starts:
+
+| Service | Default |
+| --- | --- |
+| Dashboard | `http://127.0.0.1:8080` |
+| SMTP receiver | `127.0.0.1:1025` |
+| HTTP API | `127.0.0.1:8025` |
+
+Configure your local app to send development email to DevCaught:
+
+```text
+SMTP_HOST=127.0.0.1
+SMTP_PORT=1025
+SMTP_SECURE=false
+```
+
+Then trigger a signup OTP, welcome email, password reset, or magic link from your app. The email appears in the DevCaught dashboard instead of going to a real inbox.
+
+You can also send a sample message from this repo:
+
+```bash
+npm run send:test-mail
+npm run send:test-mail -- --fixture=link
+```
 
 ---
 
-## Current V0.1 features
+## What DevCaught is
+
+DevCaught is a local testing tool for developers building apps that send email.
+
+Use it when you want to test:
+
+- Signup OTP emails
+- Welcome emails
+- Password reset links
+- Magic login links
+- Test receipts or notification emails
+
+Instead of sending real email through Gmail, SendGrid, Resend, Mailgun, or another provider during development, point your app at DevCaught's local SMTP server and inspect the result instantly.
+
+```text
+Your local app -> DevCaught SMTP -> SQLite -> Dashboard
+```
+
+## What DevCaught is not
+
+DevCaught is intentionally small in V0.1.
+
+- It is not a Gmail inbox.
+- It does not read incoming Gmail messages.
+- It does not deliver email to real users.
+- It does not run in Vercel/Supabase hosted environments via `127.0.0.1`.
+- It is not a cloud email service.
+- It has no AI, auth, Docker, SMS, push notifications, or webhooks yet.
+
+`127.0.0.1:1025` means "this same machine". If your app is deployed on Vercel or Supabase, `127.0.0.1` points to their server, not your laptop. DevCaught is for local development.
+
+## Features
 
 - Local SMTP capture (`127.0.0.1:1025` by default)
 - SQLite storage on disk
@@ -54,21 +111,7 @@ ExperimentalWarning: SQLite is an experimental feature and might change at any t
 
 That warning is expected and harmless. The store is isolated behind `InboxStore` if the API ever needs to be swapped.
 
-## Installation
-
-```bash
-git clone https://github.com/codeyantra/devcaught.git
-cd devcaught
-npm install
-```
-
-## Running locally
-
-```bash
-npm run dev
-```
-
-This starts:
+## Local services
 
 | Service | Default | Env |
 | --- | --- | --- |
@@ -175,6 +218,16 @@ npm run test:devcaught   # parsers, store, SMTP capture
 npm run typecheck
 npm run send:test-mail
 ```
+
+## Brand assets
+
+<p>
+  <img src="public/devcaught-logo-concept.png" alt="DevCaught generated logo concept" width="420">
+</p>
+
+- Primary SVG logo: `public/devcaught-logo.svg`
+- App mark: `public/devcaught-mark.svg`
+- Generated concept: `public/devcaught-logo-concept.png`
 
 ## Project status
 
