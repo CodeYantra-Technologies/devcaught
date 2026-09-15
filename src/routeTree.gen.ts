@@ -17,6 +17,8 @@ import { Route as ApiMessagesIndexRouteImport } from './routes/api/messages/inde
 import { Route as ApiMessagesIdRouteImport } from './routes/api/messages/$id'
 import { Route as ApiMessagesClearRouteImport } from './routes/api/messages/clear'
 import { Route as ApiMessagesTestRouteImport } from './routes/api/messages/test'
+import { Route as ApiWebhooksIndexRouteImport } from './routes/api/webhooks/index'
+import { Route as ApiWebhooksSplatRouteImport } from './routes/api/webhooks/$'
 import { Route as ApiMessagesIdRawRouteImport } from './routes/api/messages/$id/raw'
 
 const IndexRoute = IndexRouteImport.update({
@@ -59,6 +61,16 @@ const ApiMessagesTestRoute = ApiMessagesTestRouteImport.update({
   path: '/api/messages/test',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiWebhooksIndexRoute = ApiWebhooksIndexRouteImport.update({
+  id: '/api/webhooks/',
+  path: '/api/webhooks/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiWebhooksSplatRoute = ApiWebhooksSplatRouteImport.update({
+  id: '/api/webhooks/$',
+  path: '/api/webhooks/$',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiMessagesIdRawRoute = ApiMessagesIdRawRouteImport.update({
   id: '/raw',
   path: '/raw',
@@ -73,7 +85,9 @@ export interface FileRoutesByFullPath {
   '/api/messages/$id': typeof ApiMessagesIdRouteWithChildren
   '/api/messages/clear': typeof ApiMessagesClearRoute
   '/api/messages/test': typeof ApiMessagesTestRoute
+  '/api/webhooks/$': typeof ApiWebhooksSplatRoute
   '/api/messages/': typeof ApiMessagesIndexRoute
+  '/api/webhooks/': typeof ApiWebhooksIndexRoute
   '/api/messages/$id/raw': typeof ApiMessagesIdRawRoute
 }
 export interface FileRoutesByTo {
@@ -84,7 +98,9 @@ export interface FileRoutesByTo {
   '/api/messages/$id': typeof ApiMessagesIdRouteWithChildren
   '/api/messages/clear': typeof ApiMessagesClearRoute
   '/api/messages/test': typeof ApiMessagesTestRoute
+  '/api/webhooks/$': typeof ApiWebhooksSplatRoute
   '/api/messages': typeof ApiMessagesIndexRoute
+  '/api/webhooks': typeof ApiWebhooksIndexRoute
   '/api/messages/$id/raw': typeof ApiMessagesIdRawRoute
 }
 export interface FileRoutesById {
@@ -96,7 +112,9 @@ export interface FileRoutesById {
   '/api/messages/$id': typeof ApiMessagesIdRouteWithChildren
   '/api/messages/clear': typeof ApiMessagesClearRoute
   '/api/messages/test': typeof ApiMessagesTestRoute
+  '/api/webhooks/$': typeof ApiWebhooksSplatRoute
   '/api/messages/': typeof ApiMessagesIndexRoute
+  '/api/webhooks/': typeof ApiWebhooksIndexRoute
   '/api/messages/$id/raw': typeof ApiMessagesIdRawRoute
 }
 export interface FileRouteTypes {
@@ -109,7 +127,9 @@ export interface FileRouteTypes {
     | '/api/messages/$id'
     | '/api/messages/clear'
     | '/api/messages/test'
+    | '/api/webhooks/$'
     | '/api/messages/'
+    | '/api/webhooks/'
     | '/api/messages/$id/raw'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -120,7 +140,9 @@ export interface FileRouteTypes {
     | '/api/messages/$id'
     | '/api/messages/clear'
     | '/api/messages/test'
+    | '/api/webhooks/$'
     | '/api/messages'
+    | '/api/webhooks'
     | '/api/messages/$id/raw'
   id:
     | '__root__'
@@ -131,7 +153,9 @@ export interface FileRouteTypes {
     | '/api/messages/$id'
     | '/api/messages/clear'
     | '/api/messages/test'
+    | '/api/webhooks/$'
     | '/api/messages/'
+    | '/api/webhooks/'
     | '/api/messages/$id/raw'
   fileRoutesById: FileRoutesById
 }
@@ -143,7 +167,9 @@ export interface RootRouteChildren {
   ApiMessagesIdRoute: typeof ApiMessagesIdRouteWithChildren
   ApiMessagesClearRoute: typeof ApiMessagesClearRoute
   ApiMessagesTestRoute: typeof ApiMessagesTestRoute
+  ApiWebhooksSplatRoute: typeof ApiWebhooksSplatRoute
   ApiMessagesIndexRoute: typeof ApiMessagesIndexRoute
+  ApiWebhooksIndexRoute: typeof ApiWebhooksIndexRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -204,6 +230,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiMessagesTestRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/webhooks/': {
+      id: '/api/webhooks/'
+      path: '/api/webhooks'
+      fullPath: '/api/webhooks/'
+      preLoaderRoute: typeof ApiWebhooksIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/webhooks/$': {
+      id: '/api/webhooks/$'
+      path: '/api/webhooks/$'
+      fullPath: '/api/webhooks/$'
+      preLoaderRoute: typeof ApiWebhooksSplatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/messages/$id/raw': {
       id: '/api/messages/$id/raw'
       path: '/raw'
@@ -234,7 +274,9 @@ const rootRouteChildren: RootRouteChildren = {
   ApiMessagesIdRoute: ApiMessagesIdRouteWithChildren,
   ApiMessagesClearRoute: ApiMessagesClearRoute,
   ApiMessagesTestRoute: ApiMessagesTestRoute,
+  ApiWebhooksSplatRoute: ApiWebhooksSplatRoute,
   ApiMessagesIndexRoute: ApiMessagesIndexRoute,
+  ApiWebhooksIndexRoute: ApiWebhooksIndexRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

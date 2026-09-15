@@ -10,7 +10,7 @@ DevCaught is a local-first developer inbox that captures application messages du
 
 Point your app at a local SMTP server. DevCaught stores the mail, detects OTPs and links, and puts the useful bits on a dashboard — without sending anything to the internet.
 
-**CodeYantra Technologies · V0.1**
+**CodeYantra Technologies · V0.2**
 
 ---
 
@@ -72,19 +72,22 @@ Your local app -> DevCaught SMTP -> SQLite -> Dashboard
 
 ## What DevCaught is not
 
-DevCaught is intentionally small in V0.1.
+DevCaught is intentionally small in V0.2.
 
 - It is not a Gmail inbox.
 - It does not read incoming Gmail messages.
 - It does not deliver email to real users.
 - It does not run in Vercel/Supabase hosted environments via `127.0.0.1`.
 - It is not a cloud email service.
-- It has no AI, auth, Docker, SMS, push notifications, or webhooks yet.
+- It has no AI, auth, Docker, SMS, or push notifications yet.
 
 `127.0.0.1:1025` means "this same machine". If your app is deployed on Vercel or Supabase, `127.0.0.1` points to their server, not your laptop. DevCaught is for local development.
 
 ## Features
 
+- Webhook capture with headers, query strings, formatted payload, and original body
+- Payment, order, and transaction reference detection in JSON and email
+- Inbox filters for email, webhook, and commerce detections
 - Local SMTP capture (`127.0.0.1:1025` by default)
 - SQLite storage on disk
 - Web dashboard with search, detail, delete, and clear
@@ -163,7 +166,7 @@ const transport = nodemailer.createTransport({
 });
 
 await transport.sendMail({
-  from: "NexaField <noreply@example.test>",
+  from: "Veltrix <noreply@example.test>",
   to: "developer@example.test",
   subject: "Verify your account",
   text: "Your verification code is 482913.\nThis code expires in 10 minutes.",
@@ -176,6 +179,45 @@ From this repo, with DevCaught already running:
 npm run send:test-mail
 npm run send:test-mail -- --fixture=link
 ```
+
+## Webhook inbox (V0.2)
+
+Send a POST request to `http://127.0.0.1:8025/api/webhooks` or any named
+path below it, such as `/api/webhooks/stripe` or `/api/webhooks/orders`.
+The dashboard also accepts these paths on its own origin.
+
+```bash
+curl -X POST http://127.0.0.1:8025/api/webhooks/checkout \
+  -H 'Content-Type: application/json' \
+  -d '{"type":"payment.succeeded","data":{"object":{"object":"payment","id":"pay_42","order_id":"ord_17","transaction_id":"txn_9","amount":2499,"currency":"USD","status":"succeeded"}}}'
+```
+
+The receiver returns `201 {"ok":true,"id":"…"}` after storage. Every delivery
+is a separate captured message, including retries. No event is forwarded or executed.
+Use **Catch webhook** in the inbox or Settings to copy the listener URL and
+send a sample request. Filter by **Webhook**, **Payment**, **Order**, or
+**Transaction**; select a message to inspect detections, headers, payload, and Raw.
+Search, individual deletion, and clear inbox work across email and webhooks.
+
+UTF-8 JSON, text, and form bodies are supported (1 MB maximum; larger requests
+return 413). Empty bodies and malformed JSON remain inspectable. Compressed
+requests are rejected with 415. Raw contains a request envelope with method,
+path/query, headers, and original UTF-8 body. Headers are stored as received,
+including credentials; use development data only. There is no signature verification.
+
+Commerce detection is deterministic: nested JSON entity IDs (`payment`,
+`payment_intent`, `charge`, `order`, `transaction`), explicit reference keys
+such as `order_id` / `transactionId`, and `type` / `event` names are recognized.
+Plain email references such as `Order #ORD-42` and `Transaction ID: txn_9`
+are recognized too. Amount, currency, and status fields are shown when present;
+amounts retain the sender's original units (no assumed cents conversion).
+These are inspection hints, not confirmation of a successful payment. Generic
+unrelated IDs and unlabelled amounts are not classified. Existing messages keep
+their stored detections; new detections apply to newly received messages.
+
+Webhook data uses the existing SQLite store, so no schema migration is needed.
+A local app can reach this receiver directly; external providers need a separately
+configured tunnel or local forwarding tool. DevCaught does not create one.
 
 ## Environment variables
 
@@ -231,7 +273,7 @@ npm run send:test-mail
 
 ## Project status
 
-V0.1 is a local developer tool. It is useful the first time an app sends mail. It is not a product inbox, not a cloud service, and not an email client.
+V0.2 is a local developer tool. It is useful the first time an app sends mail. It is not a product inbox, not a cloud service, and not an email client.
 
 ## Roadmap
 
@@ -240,7 +282,7 @@ V0.1 is a local developer tool. It is useful the first time an app sends mail. I
 - OTP detection
 - Link detection
 
-**V0.2**
+**V0.2 — implemented**
 - Webhook inbox
 - Payment / order / transaction detection
 

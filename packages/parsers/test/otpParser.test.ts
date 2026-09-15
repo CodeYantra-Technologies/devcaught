@@ -5,7 +5,7 @@ import { runParsers } from "../src/runParsers.ts";
 import { linkParser } from "../src/linkParser.ts";
 
 describe("otpParser", () => {
-  it("detects the NexaField verification example", () => {
+  it("detects the Veltrix verification example", () => {
     const detections = otpParser.parse({
       subject: "Verify your account",
       textBody:

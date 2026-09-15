@@ -10,7 +10,7 @@ describe("InboxStore", () => {
     const stored = inbox.ingest({
       type: "email",
       source: "test",
-      sender: "NexaField <noreply@example.test>",
+      sender: "Veltrix <noreply@example.test>",
       recipient: "developer@example.test",
       subject: "Verify your account",
       textBody: "Your verification code is 482913.\nThis code expires in 10 minutes.",

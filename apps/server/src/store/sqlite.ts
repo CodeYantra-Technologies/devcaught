@@ -175,7 +175,17 @@ export function openInboxStore(dbPath: string): { store: InboxStore; mode: "file
     },
     get(id) {
       const row = getStmt.get(id) as MessageRow | undefined;
-      return row ? toDetail(row) : null;
+      if (!row) return null;
+      const detail = toDetail(row);
+      if (row.type === "webhook") {
+        const raw = rawStmt.get(id) as { raw_data: string } | undefined;
+        try {
+          detail.webhook = JSON.parse(raw?.raw_data ?? "null") ?? undefined;
+        } catch {
+          /* Legacy data. */
+        }
+      }
+      return detail;
     },
     getRaw(id) {
       const row = rawStmt.get(id) as { raw_data: string | null } | undefined;

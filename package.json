@@ -1,7 +1,7 @@
 {
   "name": "devcaught",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Everything your app sends. Caught.",
   "license": "MIT",
   "engines": {
@@ -26,8 +26,8 @@
     "preview:stop": "node scripts/preview.mjs stop",
     "typecheck": "tsc --noEmit",
     "check:auth": "node scripts/check-auth-invariant.mjs",
-    "test": "node --test 'scripts/**/*.test.mjs' && node --experimental-strip-types --test src/lib/app-data/app-data.test.ts src/lib/auth/gate-identity.test.ts packages/parsers/test/*.test.ts apps/server/src/config.test.ts apps/server/src/store/sqlite.test.ts apps/server/src/smtp/smtp.test.ts",
-    "test:devcaught": "node --experimental-strip-types --test packages/parsers/test/*.test.ts apps/server/src/config.test.ts apps/server/src/store/sqlite.test.ts apps/server/src/smtp/smtp.test.ts",
+    "test": "node --test 'scripts/**/*.test.mjs' && node --experimental-strip-types --test src/lib/app-data/app-data.test.ts src/lib/auth/gate-identity.test.ts packages/parsers/test/*.test.ts apps/server/src/config.test.ts apps/server/src/store/sqlite.test.ts apps/server/src/smtp/smtp.test.ts apps/server/src/http/webhook.test.ts",
+    "test:devcaught": "node --experimental-strip-types --test packages/parsers/test/*.test.ts apps/server/src/config.test.ts apps/server/src/store/sqlite.test.ts apps/server/src/smtp/smtp.test.ts apps/server/src/http/webhook.test.ts",
     "send:test-mail": "node scripts/send-test-mail.mjs",
     "lint": "eslint .",
     "format": "prettier --write ."

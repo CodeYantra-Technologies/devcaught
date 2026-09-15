@@ -31,7 +31,7 @@ describe("SMTP receiver", () => {
     });
 
     await transport.sendMail({
-      from: "NexaField <noreply@example.test>",
+      from: "Veltrix <noreply@example.test>",
       to: "developer@example.test",
       subject: "Verify your account",
       text: "Your verification code is 482913.\nThis code expires in 10 minutes.",

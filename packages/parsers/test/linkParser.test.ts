@@ -6,10 +6,10 @@ describe("linkParser", () => {
   it("extracts http and https URLs from text", () => {
     const detections = linkParser.parse({
       textBody:
-        "Reset: https://nexa.test/reset/abc123 and http://localhost:3000/ok.",
+        "Reset: https://veltrix.test/reset/abc123 and http://localhost:3000/ok.",
     });
     const values = detections.map((d) => d.value);
-    assert.ok(values.includes("https://nexa.test/reset/abc123"));
+    assert.ok(values.includes("https://veltrix.test/reset/abc123"));
     assert.ok(values.includes("http://localhost:3000/ok"));
   });
 

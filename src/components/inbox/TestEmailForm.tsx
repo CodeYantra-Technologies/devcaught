@@ -6,17 +6,17 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 
 const OTP_SAMPLE = {
-  from: "NexaField <noreply@example.test>",
+  from: "Veltrix <noreply@example.test>",
   to: "developer@example.test",
   subject: "Verify your account",
   text: "Your verification code is 482913.\nThis code expires in 10 minutes.",
 };
 
 const LINK_SAMPLE = {
-  from: "NexaField <noreply@example.test>",
+  from: "Veltrix <noreply@example.test>",
   to: "developer@example.test",
   subject: "Reset your password",
-  text: "Reset your password at https://nexa.test/reset/abc123\nThis link expires in 30 minutes.",
+  text: "Reset your password at https://veltrix.test/reset/abc123\nThis link expires in 30 minutes.",
 };
 
 export function TestEmailForm({ onCaught }: { onCaught?: (id: string) => void }) {

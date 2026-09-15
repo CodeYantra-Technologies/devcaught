@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { HtmlPreview } from "./HtmlPreview";
 import { LinkList } from "./LinkList";
+import { CopyButton } from "./CopyButton";
 import { OtpCard } from "./OtpCard";
 import { TestEmailForm } from "./TestEmailForm";
 
@@ -82,11 +83,19 @@ export function MessageDetail({
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center gap-2 border-b border-border px-4 py-3">
-        <Button variant="ghost" size="icon" className="lg:hidden" onClick={onBack} aria-label="Back to list">
+        <Button
+          variant="ghost"
+          size="icon"
+          className="lg:hidden"
+          onClick={onBack}
+          aria-label="Back to list"
+        >
           <ArrowLeft />
         </Button>
         <div className="min-w-0 flex-1">
-          <h2 className="truncate font-display text-lg tracking-tight">{message.subject || "(no subject)"}</h2>
+          <h2 className="truncate font-display text-lg tracking-tight">
+            {message.subject || "(no subject)"}
+          </h2>
         </div>
         <Button
           variant="secondary"
@@ -118,7 +127,45 @@ export function MessageDetail({
           </div>
         </dl>
 
+        {remove.error ? (
+          <p role="alert" className="mt-3 text-sm text-danger">
+            {remove.error.message}
+          </p>
+        ) : null}
         <div className="mt-6 space-y-4">
+          {message.detections
+            .filter((d) => ["payment", "order", "transaction"].includes(d.type))
+            .map((d) => (
+              <section
+                key={`${d.type}:${d.value}`}
+                className="rounded-lg border border-border bg-surface p-4"
+              >
+                <p className="text-xs uppercase text-muted">{d.type}</p>
+                <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                  <code className="break-all text-sm">{d.value}</code>
+                  <CopyButton value={d.value} label="Copy reference" />
+                </div>
+                {d.metadata && Object.keys(d.metadata).length ? (
+                  <pre className="mt-2 whitespace-pre-wrap break-all text-xs text-muted">
+                    {JSON.stringify(d.metadata, null, 2)}
+                  </pre>
+                ) : null}
+                <p className="mt-2 text-xs text-subtle">
+                  Detected hint · amounts use the sender’s original units.
+                </p>
+              </section>
+            ))}
+          {message.webhook ? (
+            <section className="rounded-lg border border-border bg-surface p-4">
+              <h3 className="text-sm font-medium">Request headers</h3>
+              <p className="my-2 break-all font-mono text-xs">
+                {message.webhook.method} {message.webhook.url}
+              </p>
+              <pre className="whitespace-pre-wrap break-all text-xs text-muted">
+                {JSON.stringify(message.webhook.headers, null, 2)}
+              </pre>
+            </section>
+          ) : null}
           {otps.map((otp) => (
             <OtpCard key={otp.value} detection={otp} />
           ))}
@@ -127,33 +174,39 @@ export function MessageDetail({
 
         <Tabs value={tab} onValueChange={setTab} className="mt-8">
           <TabsList>
-            <TabsTrigger value="preview">Preview</TabsTrigger>
+            <TabsTrigger value="preview">
+              {message.type === "webhook" ? "Payload" : "Preview"}
+            </TabsTrigger>
             <TabsTrigger value="text">Plain text</TabsTrigger>
-            <TabsTrigger value="html">HTML</TabsTrigger>
+            {message.type !== "webhook" ? <TabsTrigger value="html">HTML</TabsTrigger> : null}
             <TabsTrigger value="raw">Raw</TabsTrigger>
           </TabsList>
           <TabsContent value="preview">
             {message.htmlPreview ? (
               <HtmlPreview html={message.htmlPreview} />
             ) : (
-              <pre className="whitespace-pre-wrap rounded-[16px] border border-border bg-surface-2 p-4 font-mono text-sm">
+              <pre className="whitespace-pre-wrap break-all rounded-[16px] border border-border bg-surface-2 p-4 font-mono text-sm">
                 {message.textBody || "No body."}
               </pre>
             )}
           </TabsContent>
           <TabsContent value="text">
-            <pre className="whitespace-pre-wrap rounded-[16px] border border-border bg-surface-2 p-4 font-mono text-sm">
+            <pre className="whitespace-pre-wrap break-all rounded-[16px] border border-border bg-surface-2 p-4 font-mono text-sm">
               {message.textBody || "No plain text body."}
             </pre>
           </TabsContent>
           <TabsContent value="html">
-            <pre className="overflow-auto whitespace-pre-wrap rounded-[16px] border border-border bg-surface-2 p-4 font-mono text-xs">
+            <pre className="overflow-auto whitespace-pre-wrap break-all rounded-[16px] border border-border bg-surface-2 p-4 font-mono text-xs">
               {message.htmlBody || "No HTML body."}
             </pre>
           </TabsContent>
           <TabsContent value="raw">
-            <pre className="overflow-auto whitespace-pre-wrap rounded-[16px] border border-border bg-surface-2 p-4 font-mono text-xs">
-              {raw.isLoading ? "Loading raw MIME…" : raw.data || "Raw MIME not available."}
+            <pre className="overflow-auto whitespace-pre-wrap break-all rounded-[16px] border border-border bg-surface-2 p-4 font-mono text-xs">
+              {raw.isLoading
+                ? "Loading raw message…"
+                : raw.error
+                  ? raw.error.message
+                  : raw.data || "Raw message not available."}
             </pre>
           </TabsContent>
         </Tabs>

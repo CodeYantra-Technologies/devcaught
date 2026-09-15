@@ -1,6 +1,6 @@
 export type MessageType = "email" | "webhook" | "sms" | "push";
 export type MessageSource = "smtp" | "http" | "test";
-export type DetectionType = "otp" | "url";
+export type DetectionType = "otp" | "url" | "payment" | "order" | "transaction";
 
 export interface Detection {
   type: DetectionType;
@@ -46,6 +46,7 @@ export interface MessageDetail extends MessageSummary {
   textBody: string;
   htmlBody: string;
   htmlPreview: string;
+  webhook?: WebhookRequest;
 }
 
 export interface ListenerStatus {
@@ -72,4 +73,11 @@ export interface TestEmailInput {
   subject: string;
   text: string;
   html?: string;
+}
+
+export interface WebhookRequest {
+  method: string;
+  url: string;
+  headers: Record<string, string>;
+  body: string;
 }

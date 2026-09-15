@@ -1,3 +1,5 @@
+import { commerceParser } from "./commerceParser.ts";
+export { commerceParser } from "./commerceParser.ts";
 import { linkParser } from "./linkParser.ts";
 import { otpParser } from "./otpParser.ts";
 import type { Parser } from "./types.ts";
@@ -8,4 +10,4 @@ export { otpParser } from "./otpParser.ts";
 export { runParsers } from "./runParsers.ts";
 export type { ParseInput, Parser } from "./types.ts";
 
-export const defaultParsers: Parser[] = [otpParser, linkParser];
+export const defaultParsers: Parser[] = [otpParser, linkParser, commerceParser];

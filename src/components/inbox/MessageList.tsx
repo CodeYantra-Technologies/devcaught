@@ -20,10 +20,9 @@ export function MessageList({
   if (messages.length === 0) {
     return (
       <div className="flex h-full flex-col items-center justify-center px-6 text-center">
-        <p className="text-sm font-medium text-foreground">Inbox is empty</p>
+        <p className="text-sm font-medium text-foreground">No matching messages</p>
         <p className="mt-2 max-w-xs text-sm text-muted">
-          Point your app at the local SMTP server, or catch a test email from the composer. Test
-          ingest is not an SMTP health check.
+          Send an email or webhook to DevCaught, or adjust your search and filters.
         </p>
       </div>
     );
@@ -46,6 +45,16 @@ export function MessageList({
             >
               <div className="flex items-start justify-between gap-3">
                 <p className="line-clamp-1 text-sm font-medium text-foreground">
+                  {message.type === "webhook" ? <Badge className="mr-2">WEBHOOK</Badge> : null}
+                  {message.detections
+                    .filter((d) => ["payment", "order", "transaction"].includes(d.type))
+                    .map((d) => d.type)
+                    .filter((type, i, all) => all.indexOf(type) === i)
+                    .map((type) => (
+                      <Badge key={type} className="mr-2 uppercase">
+                        {type}
+                      </Badge>
+                    ))}
                   {otp ? (
                     <Badge variant="otp" className="mr-2 align-middle">
                       OTP

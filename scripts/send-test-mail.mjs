@@ -7,17 +7,17 @@ const fixture = process.argv.includes("--fixture=link") ? "link" : "otp";
 
 const messages = {
   otp: {
-    from: "NexaField <noreply@example.test>",
+    from: "Veltrix <noreply@example.test>",
     to: "developer@example.test",
     subject: "Verify your account",
     text: "Your verification code is 482913.\nThis code expires in 10 minutes.",
   },
   link: {
-    from: "NexaField <noreply@example.test>",
+    from: "Veltrix <noreply@example.test>",
     to: "developer@example.test",
     subject: "Reset your password",
-    text: "Reset your password at https://nexa.test/reset/abc123\nThis link expires in 30 minutes.",
-    html: `<p>Reset your password at <a href="https://nexa.test/reset/abc123">https://nexa.test/reset/abc123</a></p>`,
+    text: "Reset your password at https://veltrix.test/reset/abc123\nThis link expires in 30 minutes.",
+    html: `<p>Reset your password at <a href="https://veltrix.test/reset/abc123">https://veltrix.test/reset/abc123</a></p>`,
   },
 };
 
