@@ -11,6 +11,20 @@ const React = require("react");
 const { renderToStaticMarkup } = require("react-dom/server");
 const { QueryClient, QueryClientProvider } = require("@tanstack/react-query");
 
+/**
+ * @overload
+ * @param {"./VerifiedSessionBoundary.tsx"} filename
+ * @returns {{ VerifiedSessionBoundary: typeof import("./VerifiedSessionBoundary.tsx").VerifiedSessionBoundary }}
+ */
+/**
+ * @overload
+ * @param {"./AuthPage.tsx"} filename
+ * @returns {{ AuthPage: typeof import("./AuthPage.tsx").AuthPage }}
+ */
+/**
+ * @param {string} filename
+ * @returns {object}
+ */
 function loadComponent(filename) {
   const source = readFileSync(new URL(filename, import.meta.url), "utf8");
   const compiled = ts.transpileModule(source, {
@@ -27,7 +41,9 @@ function loadComponent(filename) {
     "../../lib/api": { fetchStatus: unexpectedRequest },
     "../../lib/inbox/browser-access.ts": access,
   };
+  /** @type {{ exports: object }} */
   const module = { exports: {} };
+  /** @param {keyof typeof dependencies} name */
   const resolve = name => {
     assert.ok(Object.hasOwn(dependencies, name), `Unexpected SSR dependency: ${name}`);
     return dependencies[name];
