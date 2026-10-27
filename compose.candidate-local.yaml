@@ -1,0 +1,53 @@
+name: devcaught-candidate
+services:
+  candidate:
+    build:
+      context: .
+      dockerfile: scripts/candidate/Dockerfile
+    image: devcaught:candidate
+    container_name: devcaught-local-candidate
+    init: true
+    restart: "no"
+    user: "0:0"
+    entrypoint: [node, /candidate-launch.mjs]
+    environment:
+      BETTER_AUTH_URL: http://localhost:3300
+      VITE_AUTH_ENABLED: "true"
+    ports:
+      - 127.0.0.1:3300:3000
+      - 127.0.0.1:8325:8025
+      - 127.0.0.1:1325:1025
+    secrets: [app_password, better_auth_secret]
+    volumes:
+      - candidate_inbox:/app/data
+    networks: [default, pg_dev_net]
+    security_opt: [no-new-privileges:true]
+  verify:
+    image: node:22-bookworm-slim
+    profiles: [tools]
+    user: "${DEVCAUGHT_SETUP_UID:?}:${DEVCAUGHT_SETUP_GID:?}"
+    working_dir: /work
+    entrypoint: [node, --experimental-strip-types, scripts/candidate/verify.ts]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    secrets: [app_password]
+    volumes:
+      - ./node_modules:/work/node_modules:ro
+      - ./scripts/candidate:/work/scripts/candidate:ro
+      - ./src/lib/inbox/private-inbox-readiness.ts:/work/src/lib/inbox/private-inbox-readiness.ts:ro
+    networks: [default, pg_dev_net]
+secrets:
+  app_password:
+    file: ${DEVCAUGHT_AUTH_SECRET_DIR:?}/app_password
+  better_auth_secret:
+    file: ${DEVCAUGHT_AUTH_SECRET_DIR:?}/better_auth_secret
+volumes:
+  candidate_inbox:
+    name: devcaught_candidate_inbox
+networks:
+  default:
+    name: devcaught_candidate_net
+  pg_dev_net:
+    external: true
+    name: devcaught_pg_dev_net

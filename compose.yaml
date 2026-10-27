@@ -1,0 +1,36 @@
+services:
+  devcaught:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: devcaught:local
+    container_name: devcaught-local
+
+    restart: unless-stopped
+    init: true
+
+    environment:
+      NODE_ENV: production
+      HOST: "0.0.0.0"
+      PORT: "3000"
+      DEVCAUGHT_HOST: "0.0.0.0"
+      DEVCAUGHT_SMTP_PORT: "1025"
+      DEVCAUGHT_HTTP_PORT: "8025"
+      DEVCAUGHT_DB_PATH: "/app/data/devcaught.db"
+      DEVCAUGHT_REQUIRE_PERSISTENT_DB: "1"
+
+    ports:
+      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:8025:8025"
+      - "127.0.0.1:1025:1025"
+
+    volumes:
+      - devcaught_inbox:/app/data
+
+    stop_grace_period: 15s
+
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  devcaught_inbox:

@@ -1,0 +1,52 @@
+name: devcaught-auth-dev
+services:
+  postgres-dev:
+    image: postgres:16-bookworm
+    container_name: devcaught-pg-dev
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: postgres
+      POSTGRES_PASSWORD_FILE: /run/secrets/admin_password
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+    secrets: [admin_password]
+    volumes:
+      - pg_dev_data:/var/lib/postgresql/data
+    networks: [pg_dev_net]
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U postgres -d postgres']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  setup:
+    image: node:22-bookworm-slim
+    profiles: [tools]
+    user: "${DEVCAUGHT_SETUP_UID:?}:${DEVCAUGHT_SETUP_GID:?}"
+    working_dir: /work
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    entrypoint: [node, --experimental-strip-types, scripts/postgres-dev/run.ts]
+    secrets: [admin_password, owner_password, app_password]
+    volumes:
+      - ./node_modules:/work/node_modules:ro
+      - ./scripts/postgres-dev:/work/scripts/postgres-dev:ro
+      - ./scripts/migrate.mjs:/work/scripts/migrate.mjs:ro
+      - ./scripts/migration-plan.mjs:/work/scripts/migration-plan.mjs:ro
+      - ./migrations:/work/migrations:ro
+      - ./src/lib/inbox/private-inbox-readiness.ts:/work/src/lib/inbox/private-inbox-readiness.ts:ro
+    networks: [pg_dev_net]
+secrets:
+  admin_password:
+    file: ${DEVCAUGHT_AUTH_SECRET_DIR:?}/admin_password
+  owner_password:
+    file: ${DEVCAUGHT_AUTH_SECRET_DIR:?}/owner_password
+  app_password:
+    file: ${DEVCAUGHT_AUTH_SECRET_DIR:?}/app_password
+volumes:
+  pg_dev_data:
+    name: devcaught_pg_dev_data
+networks:
+  pg_dev_net:
+    name: devcaught_pg_dev_net
+    internal: true

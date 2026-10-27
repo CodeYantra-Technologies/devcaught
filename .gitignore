@@ -8,14 +8,14 @@ dist/
 .vercel/
 
 # Local app-builder / preview metadata
-.grok/
+.devcaught/*
+!.devcaught/app-env.json
 .agents/
 .codex/
 .tanstack/
 AGENTS.md
 .project_id
 startup.sh
-public/__grok/
 artifacts/
 
 # Runtime data

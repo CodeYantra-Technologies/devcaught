@@ -1,0 +1,17 @@
+FROM node:22-bookworm-slim AS builder
+WORKDIR /build
+COPY package*.json ./
+RUN npm ci
+COPY apps ./apps
+COPY packages ./packages
+COPY src/lib/inbox/private-inbox-routing.server.ts ./src/lib/inbox/private-inbox-routing.server.ts
+COPY scripts/smtp-integration/ingestion.vite.mjs ./scripts/smtp-integration/ingestion.vite.mjs
+RUN ./node_modules/.bin/vite build --config scripts/smtp-integration/ingestion.vite.mjs
+FROM node:22-bookworm-slim
+WORKDIR /app
+COPY --from=builder /build/node_modules ./node_modules
+COPY --from=builder /build/ingestion-build ./ingestion-build
+COPY scripts/smtp-integration/ingestion-bootstrap.mjs scripts/smtp-integration/diagnostics.mjs scripts/smtp-integration/smoke-entry.mjs ./
+ENV NODE_ENV=production DEVCAUGHT_HOST=127.0.0.1 DEVCAUGHT_SMTP_PORT=1025 DEVCAUGHT_HTTP_PORT=8025 DEVCAUGHT_SMTP_ROUTING_MODE=private DEVCAUGHT_DB_PATH=/app/data/startup-smoke.db DEVCAUGHT_REQUIRE_PERSISTENT_DB=1 DEVCAUGHT_RETENTION_DAYS=0 DEVCAUGHT_MAX_MESSAGES=0
+USER 1000:1000
+ENTRYPOINT ["node", "/app/smoke-entry.mjs"]

@@ -1,10 +1,11 @@
 import { formatDistanceToNow } from "date-fns";
 import type { MessageSummary } from "../../../packages/shared/src/types";
 import { Badge } from "@/components/ui/badge";
+import { SmsListEntry } from "./SmsListEntry";
 import { cn } from "@/lib/utils";
 
 function senderName(sender: string) {
-  const match = sender.match(/^"?([^"<]+)"?\s*</);
+  const match = sender.match(/^"?([^"<]+)?\s*</);
   return (match?.[1] ?? sender).trim() || "Unknown sender";
 }
 
@@ -33,6 +34,18 @@ export function MessageList({
       {messages.map((message) => {
         const otp = message.detections.find((d) => d.type === "otp");
         const selected = message.id === selectedId;
+
+        if (message.type === "sms") {
+          return (
+            <SmsListEntry
+              key={message.id}
+              message={message}
+              selectedId={selectedId}
+              onSelect={onSelect}
+            />
+          );
+        }
+
         return (
           <li key={message.id}>
             <button

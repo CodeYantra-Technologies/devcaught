@@ -1,0 +1,16 @@
+FROM node:22-bookworm-slim AS builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+ENV DEVCAUGHT_DOCKER_BUILD=1
+ENV VITE_AUTH_ENABLED=true
+# Source substitution occurs only inside this explicitly separate build.
+RUN node scripts/candidate/prepare-auth-build.mjs --inside-candidate-build && env -u DATABASE_URL npm run build
+FROM node:22-bookworm-slim
+ENV NODE_ENV=production HOST=0.0.0.0 PORT=3300 DEVCAUGHT_HOST=0.0.0.0 DEVCAUGHT_SMTP_PORT=1025 DEVCAUGHT_HTTP_PORT=8025 DEVCAUGHT_DB_PATH=/app/data/candidate-auth-verification.db DEVCAUGHT_REQUIRE_PERSISTENT_DB=1
+WORKDIR /app
+COPY --from=builder --chown=node:node /app/.output ./.output
+COPY scripts/candidate/launch.mjs /candidate-launch.mjs
+RUN mkdir -p /app/data && chown node:node /app/data
+ENTRYPOINT ["node", "/candidate-launch.mjs"]

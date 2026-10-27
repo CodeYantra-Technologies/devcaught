@@ -1,0 +1,24 @@
+services:
+  candidate:
+    build:
+      dockerfile: scripts/candidate/Dockerfile.auth
+    image: ${DEVCAUGHT_CANDIDATE_AUTH_IMAGE:-devcaught:candidate-auth-verification}
+    environment:
+      PORT: "3300"
+      DEVCAUGHT_APP_ENV: local-development
+      DEVCAUGHT_CANDIDATE_AUTH_TEST: ${DEVCAUGHT_CANDIDATE_AUTH_TEST:-disabled}
+      DEVCAUGHT_CANDIDATE_AUTH_EXPIRES: ${DEVCAUGHT_CANDIDATE_AUTH_EXPIRES:-0}
+      DEVCAUGHT_DB_PATH: /app/data/candidate-auth-verification.db
+    ports: !override
+      - 127.0.0.1:3300:3300
+    volumes: !override
+      - candidate_auth_inbox:/app/data
+  verify:
+    entrypoint: [node, --experimental-strip-types, scripts/candidate/verify-auth.ts]
+    network_mode: service:candidate
+    networks: !reset []
+    environment:
+      AUTH_VERIFY_MODE: ${AUTH_VERIFY_MODE:-closed}
+volumes:
+  candidate_auth_inbox:
+    name: devcaught_candidate_auth_inbox

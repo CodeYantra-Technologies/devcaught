@@ -1,0 +1,20 @@
+ARG HISTORICAL_IMAGE
+FROM ${HISTORICAL_IMAGE} AS sms-builder
+USER root
+WORKDIR /app
+# The inspected historical image already contains Vite and runtime dependencies.
+# Rebuild current ingestion source without npm install, app plugins or auth source.
+COPY package*.json ./
+COPY apps ./apps
+COPY packages ./packages
+COPY src/lib/inbox/private-inbox-routing.server.ts ./src/lib/inbox/private-inbox-routing.server.ts
+COPY scripts/smtp-integration/ingestion.vite.mjs ./scripts/smtp-integration/ingestion.vite.mjs
+RUN ./node_modules/.bin/vite build --config scripts/smtp-integration/ingestion.vite.mjs
+FROM ${HISTORICAL_IMAGE}
+USER root
+WORKDIR /app
+COPY --from=sms-builder /app/ingestion-build /app/ingestion-build
+COPY launch.mjs /smtp-test-launch.mjs
+COPY ingestion-bootstrap.mjs /app/ingestion-bootstrap.mjs
+COPY diagnostics.mjs /app/diagnostics.mjs
+ENTRYPOINT ["node", "/smtp-test-launch.mjs"]

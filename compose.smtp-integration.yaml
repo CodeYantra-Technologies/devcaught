@@ -1,0 +1,52 @@
+name: devcaught-smtp-integration
+services:
+  smtp-test:
+    build:
+      context: .
+      dockerfile: scripts/smtp-integration/Dockerfile
+    image: devcaught:smtp-routing-integration
+    container_name: devcaught-smtp-routing-test
+    init: true
+    restart: "no"
+    environment:
+      DEVCAUGHT_INTEGRATION_INGESTION_OWNER: web
+      DEVCAUGHT_SMTP_ROUTING_MODE: private
+      DEVCAUGHT_DB_PATH: /app/data/smtp-integration.db
+      DEVCAUGHT_REQUIRE_PERSISTENT_DB: "1"
+      DEVCAUGHT_RETENTION_DAYS: "0"
+      DEVCAUGHT_MAX_MESSAGES: "0"
+      BETTER_AUTH_URL: http://localhost:3000
+    secrets: [app_password, better_auth_secret]
+    volumes:
+      - smtp_test_data:/app/data
+    networks: [smtp_test_net, pg_dev_net]
+    security_opt: [no-new-privileges:true]
+  verifier:
+    image: node:22-bookworm-slim
+    container_name: devcaught-smtp-routing-verifier
+    profiles: [tools]
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    entrypoint: [node, /harness/verify.mjs]
+    volumes:
+      - ./scripts/smtp-integration:/harness:ro
+      - ${DEVCAUGHT_SMTP_MANIFEST:?}:/manifest.json:ro
+      - smtp_test_data:/evidence:ro
+    networks: [smtp_test_net]
+secrets:
+  app_password:
+    file: ${DEVCAUGHT_AUTH_SECRET_DIR:?}/app_password
+  better_auth_secret:
+    file: ${DEVCAUGHT_AUTH_SECRET_DIR:?}/better_auth_secret
+volumes:
+  smtp_test_data:
+    name: devcaught_smtp_routing_test_data
+networks:
+  smtp_test_net:
+    name: devcaught_smtp_routing_test_net
+    internal: true
+  pg_dev_net:
+    external: true
+    name: devcaught_pg_dev_net

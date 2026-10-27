@@ -1,0 +1,52 @@
+services:
+  auth-test:
+    image: devcaught:private-api-acceptance-2j2
+    container_name: devcaught-private-api-2j2
+    init: true
+    restart: "no"
+    read_only: true
+    environment:
+      HOST: 0.0.0.0
+      PORT: "3000"
+      DEVCAUGHT_INTEGRATION_INGESTION_OWNER: private-api-test
+      DEVCAUGHT_PRIVATE_API_RUN: ${DEVCAUGHT_PRIVATE_API_RUN:?}
+      DEVCAUGHT_DB_PATH: /app/data/private-api-acceptance.db
+      DEVCAUGHT_REQUIRE_PERSISTENT_DB: "1"
+    secrets: [app_password]
+    volumes:
+      - private_api_data:/app/data
+      - ${DEVCAUGHT_SMTP_MANIFEST:?}:/manifest.json:ro
+    networks: [private_api_net, pg_dev_net]
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETUID, SETGID, KILL, DAC_OVERRIDE, FOWNER]
+    security_opt: [no-new-privileges:true]
+    labels:
+      devcaught.smtp-run: ${DEVCAUGHT_SMTP_RUN:?}
+  verifier:
+    image: ${DEVCAUGHT_SMTP_VERIFIER_IMAGE:?}
+    profiles: [tools]
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    entrypoint: [node, /scripts/private-api-acceptance/verify.mjs]
+    volumes:
+      - ./scripts:/scripts:ro
+      - ${DEVCAUGHT_SMTP_MANIFEST:?}:/manifest.json:ro
+      - private_api_data:/evidence:ro
+    networks: [private_api_net]
+    labels:
+      devcaught.smtp-run: ${DEVCAUGHT_SMTP_RUN:?}
+secrets:
+  app_password:
+    file: ${DEVCAUGHT_AUTH_SECRET_DIR:?}/app_password
+volumes:
+  private_api_data:
+    name: devcaught_private_api_2j2_data
+networks:
+  private_api_net:
+    name: devcaught_private_api_2j2_net
+    internal: true
+  pg_dev_net:
+    external: true
+    name: devcaught_pg_dev_net

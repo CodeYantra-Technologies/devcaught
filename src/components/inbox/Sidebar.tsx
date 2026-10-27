@@ -1,3 +1,5 @@
+import { useVerifiedUser } from "../auth/VerifiedSessionBoundary";
+import { privateInboxKey } from "../../lib/inbox/browser-access.ts";
 import { Inbox, Settings } from "lucide-react";
 import { Link, useRouterState } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
@@ -10,14 +12,14 @@ const links = [
 ] as const;
 
 export function Sidebar() {
+  const user = useVerifiedUser();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const status = useQuery({
-    queryKey: ["status"],
-    queryFn: fetchStatus,
+    queryKey: privateInboxKey(user.id, "status"),
+    queryFn: ({ signal }) => fetchStatus(signal),
     refetchInterval: 4000,
   });
 
-  const smtpRunning = status.data?.smtp.running ?? false;
 
   return (
     <aside className="flex h-full w-full flex-col border-r border-border bg-surface">
@@ -47,19 +49,9 @@ export function Sidebar() {
         })}
       </nav>
       <div className="border-t border-border px-5 py-4">
-        <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-subtle">SMTP server</p>
-        <p className="mt-2 flex items-center gap-2 text-sm">
-          <span
-            className={cn("size-2 rounded-full", smtpRunning ? "bg-otp" : "bg-danger")}
-            aria-hidden
-          />
-          <span className="text-foreground">{smtpRunning ? "Running" : "Stopped"}</span>
-        </p>
-        {status.data ? (
-          <p className="mt-1 font-mono text-xs text-subtle">
-            {status.data.smtp.host}:{status.data.smtp.port}
-          </p>
-        ) : null}
+        <p className="text-xs text-subtle">Your private inbox</p>
+        <p className="mt-2 text-sm">{status.data ? `${status.data.messageCount} messages` : "Checking inbox…"}</p>
+        {status.error && <p role="alert" className="text-sm">{status.error.message}</p>}
       </div>
     </aside>
   );

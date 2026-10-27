@@ -1,3 +1,5 @@
+import { useVerifiedUser } from "../auth/VerifiedSessionBoundary";
+import { privateInboxKey } from "../../lib/inbox/browser-access.ts";
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { sendTestEmail } from "@/lib/api";
@@ -20,6 +22,7 @@ const LINK_SAMPLE = {
 };
 
 export function TestEmailForm({ onCaught }: { onCaught?: (id: string) => void }) {
+  const user = useVerifiedUser();
   const queryClient = useQueryClient();
   const [from, setFrom] = useState(OTP_SAMPLE.from);
   const [to, setTo] = useState(OTP_SAMPLE.to);
@@ -29,8 +32,8 @@ export function TestEmailForm({ onCaught }: { onCaught?: (id: string) => void })
   const mutation = useMutation({
     mutationFn: sendTestEmail,
     onSuccess: async (message) => {
-      await queryClient.invalidateQueries({ queryKey: ["messages"] });
-      await queryClient.invalidateQueries({ queryKey: ["status"] });
+      await queryClient.invalidateQueries({ queryKey: privateInboxKey(user.id, "messages") });
+      await queryClient.invalidateQueries({ queryKey: privateInboxKey(user.id, "status") });
       onCaught?.(message.id);
     },
   });
@@ -94,7 +97,7 @@ export function TestEmailForm({ onCaught }: { onCaught?: (id: string) => void })
           {mutation.isPending ? "Catching…" : "Catch test email"}
         </Button>
         <p className="text-xs text-subtle">
-          Uses the ingest pipeline. Does not prove the SMTP port is reachable.
+          Creates a test email only in your private inbox.
         </p>
       </div>
       {mutation.error ? <p className="text-sm text-danger">{mutation.error.message}</p> : null}

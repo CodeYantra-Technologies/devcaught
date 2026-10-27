@@ -1,3 +1,5 @@
+import { useVerifiedUser } from "../auth/VerifiedSessionBoundary";
+import { privateInboxKey } from "../../lib/inbox/browser-access.ts";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
 import { ArrowLeft, Trash2 } from "lucide-react";
@@ -5,10 +7,12 @@ import { useEffect, useState } from "react";
 import { deleteMessage, fetchMessage, fetchRaw } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { SmsEventDetail } from "./SmsEventDetail";
 import { HtmlPreview } from "./HtmlPreview";
 import { LinkList } from "./LinkList";
 import { CopyButton } from "./CopyButton";
 import { OtpCard } from "./OtpCard";
+import { maskPhoneSms } from "../../../packages/shared/src/sms/phone";
 import { TestEmailForm } from "./TestEmailForm";
 
 export function MessageDetail({
@@ -22,6 +26,7 @@ export function MessageDetail({
   onDeleted: () => void;
   onCaught: (id: string) => void;
 }) {
+  const user = useVerifiedUser();
   const queryClient = useQueryClient();
   const [tab, setTab] = useState("preview");
 
@@ -30,21 +35,21 @@ export function MessageDetail({
   }, [id]);
 
   const detail = useQuery({
-    queryKey: ["message", id],
-    queryFn: () => fetchMessage(id!),
+    queryKey: privateInboxKey(user.id, "message", id),
+    queryFn: ({ signal }) => fetchMessage(id!, signal),
     enabled: Boolean(id),
   });
   const raw = useQuery({
-    queryKey: ["message-raw", id],
-    queryFn: () => fetchRaw(id!),
+    queryKey: privateInboxKey(user.id, "message-raw", id),
+    queryFn: ({ signal }) => fetchRaw(id!, signal),
     enabled: Boolean(id) && tab === "raw",
   });
 
   const remove = useMutation({
     mutationFn: deleteMessage,
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["messages"] });
-      await queryClient.invalidateQueries({ queryKey: ["status"] });
+      await queryClient.invalidateQueries({ queryKey: privateInboxKey(user.id, "messages") });
+      await queryClient.invalidateQueries({ queryKey: privateInboxKey(user.id, "status") });
       onDeleted();
     },
   });
@@ -55,12 +60,12 @@ export function MessageDetail({
         <div className="mx-auto w-full max-w-xl">
           <p className="font-display text-2xl tracking-tight">Nothing selected</p>
           <p className="mt-2 text-sm text-muted">
-            Choose a caught message, or ingest a test email through the same pipeline SMTP uses.
+            Choose a message, or create a test email in your private inbox.
           </p>
           <div className="mt-6 rounded-[24px] border border-border bg-surface p-5">
             <p className="text-sm font-medium">Catch test email</p>
             <p className="mb-4 mt-1 text-xs text-subtle">
-              Application-level ingest. SMTP health is on Settings.
+              This test message belongs only to your signed-in account.
             </p>
             <TestEmailForm onCaught={onCaught} />
           </div>
@@ -79,6 +84,8 @@ export function MessageDetail({
   const message = detail.data;
   const otps = message.detections.filter((d) => d.type === "otp");
   const urls = message.detections.filter((d) => d.type === "url");
+  const fromDisplay = message.type === "sms" ? maskPhoneSms(message.sender) : message.sender;
+  const toDisplay = message.type === "sms" ? maskPhoneSms(message.recipient) : message.recipient;
 
   return (
     <div className="flex h-full flex-col">
@@ -111,11 +118,11 @@ export function MessageDetail({
         <dl className="grid gap-3 text-sm sm:grid-cols-2">
           <div>
             <dt className="text-xs text-subtle">From</dt>
-            <dd className="mt-1 break-all">{message.sender || "—"}</dd>
+            <dd className="mt-1 break-all">{fromDisplay || "—"}</dd>
           </div>
           <div>
             <dt className="text-xs text-subtle">To</dt>
-            <dd className="mt-1 break-all">{message.recipient || "—"}</dd>
+            <dd className="mt-1 break-all">{toDisplay || "—"}</dd>
           </div>
           <div>
             <dt className="text-xs text-subtle">Caught</dt>
@@ -171,6 +178,7 @@ export function MessageDetail({
           ))}
           <LinkList detections={urls} />
         </div>
+        {message.type === "sms" && message.sms ? <SmsEventDetail sms={message.sms} /> : null}
 
         <Tabs value={tab} onValueChange={setTab} className="mt-8">
           <TabsList>
@@ -179,6 +187,7 @@ export function MessageDetail({
             </TabsTrigger>
             <TabsTrigger value="text">Plain text</TabsTrigger>
             {message.type !== "webhook" ? <TabsTrigger value="html">HTML</TabsTrigger> : null}
+            {message.type === "sms" ? <TabsTrigger value="sms">SMS</TabsTrigger> : null}
             <TabsTrigger value="raw">Raw</TabsTrigger>
           </TabsList>
           <TabsContent value="preview">
@@ -200,6 +209,11 @@ export function MessageDetail({
               {message.htmlBody || "No HTML body."}
             </pre>
           </TabsContent>
+          {message.type === "sms" ? (
+            <TabsContent value="sms">
+              <SmsEventDetail sms={message.sms!} />
+            </TabsContent>
+          ) : null}
           <TabsContent value="raw">
             <pre className="overflow-auto whitespace-pre-wrap break-all rounded-[16px] border border-border bg-surface-2 p-4 font-mono text-xs">
               {raw.isLoading

@@ -1,0 +1,56 @@
+services:
+  sms-test:
+    image: devcaught:sms-routing-integration-2i4
+    container_name: devcaught-sms-routing-2i4
+    init: true
+    restart: "no"
+    environment:
+      DEVCAUGHT_INTEGRATION_INGESTION_OWNER: sms
+      DEVCAUGHT_SMS_ROUTING_MODE: private
+      DEVCAUGHT_SMTP_ROUTING_MODE: ""
+      DEVCAUGHT_HOST: 0.0.0.0
+      DEVCAUGHT_SMTP_PORT: "1025"
+      DEVCAUGHT_HTTP_PORT: "8025"
+      DEVCAUGHT_DB_PATH: /app/data/sms-integration.db
+      DEVCAUGHT_REQUIRE_PERSISTENT_DB: "1"
+      DEVCAUGHT_RETENTION_DAYS: "0"
+      DEVCAUGHT_MAX_MESSAGES: "0"
+      TWILIO_ACCOUNT_SID: ${DEVCAUGHT_SMS_ACCOUNT:?}
+      TWILIO_AUTH_TOKEN: ${DEVCAUGHT_SMS_TEST_TOKEN:?}
+      TWILIO_PUBLIC_URL: https://sms.integration.invalid/api/webhooks/twilio
+    secrets: [app_password]
+    volumes: [sms_test_data:/app/data]
+    networks: [sms_test_net, pg_dev_net]
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETUID, SETGID, KILL, DAC_OVERRIDE, FOWNER]
+    security_opt: [no-new-privileges:true]
+    labels:
+      devcaught.smtp-run: ${DEVCAUGHT_SMTP_RUN:?}
+  verifier:
+    image: ${DEVCAUGHT_SMTP_VERIFIER_IMAGE:?}
+    profiles: [tools]
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    entrypoint: [node, /harness/verify-sms.mjs]
+    volumes:
+      - ./scripts/smtp-integration:/harness:ro
+      - ${DEVCAUGHT_SMTP_MANIFEST:?}:/manifest.json:ro
+      - sms_test_data:/evidence:ro
+    networks: [sms_test_net]
+    labels:
+      devcaught.smtp-run: ${DEVCAUGHT_SMTP_RUN:?}
+secrets:
+  app_password:
+    file: ${DEVCAUGHT_AUTH_SECRET_DIR:?}/app_password
+volumes:
+  sms_test_data:
+    name: devcaught_sms_routing_2i4_data
+networks:
+  sms_test_net:
+    name: devcaught_sms_routing_2i4_net
+    internal: true
+  pg_dev_net:
+    external: true
+    name: devcaught_pg_dev_net

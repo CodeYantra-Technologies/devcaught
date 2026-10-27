@@ -1,0 +1,7 @@
+ARG HISTORICAL_IMAGE
+FROM ${HISTORICAL_IMAGE}
+USER root
+COPY launch.mjs /smtp-test-launch.mjs
+COPY ingestion-bootstrap.mjs /app/ingestion-bootstrap.mjs
+COPY diagnostics.mjs /app/diagnostics.mjs
+ENTRYPOINT ["node", "/smtp-test-launch.mjs"]

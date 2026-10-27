@@ -2,12 +2,17 @@ import { Menu } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Sidebar } from "./Sidebar";
+import { VerifiedSessionBoundary } from "../auth/VerifiedSessionBoundary";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
+  return <VerifiedSessionBoundary><InboxShell>{children}</InboxShell></VerifiedSessionBoundary>;
+}
+
+function InboxShell({ children }: { children: React.ReactNode }) {
   const [open, setOpen] = useState(false);
 
   return (
-    <div className="flex h-dvh overflow-hidden bg-bg text-foreground">
+    <div className="flex h-full overflow-hidden bg-bg text-foreground">
       <div className="hidden w-[240px] shrink-0 lg:block">
         <Sidebar />
       </div>

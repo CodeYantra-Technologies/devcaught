@@ -1,0 +1,45 @@
+{
+	admin off
+	persist_config off
+	auto_https disable_redirects
+	local_certs
+	skip_install_trust
+	servers {
+		protocols h1 h2
+		strict_sni_host on
+	}
+	# No request/access logs or raw operational output retained by this candidate.
+	log {
+		output discard
+	}
+}
+
+https://app.devcaught.test {
+	tls internal
+	@canonical expression `{http.request.hostport} == "app.devcaught.test:8443"`
+	handle @canonical {
+		# Remove client forwarding claims before constructing trusted proxy headers.
+		# Origin and Sec-Fetch-* remain untouched for application validation.
+		request_header -Forwarded
+		request_header -X-Forwarded-*
+		request_header -X-Original-URL
+		request_header -X-Rewrite-URL
+		reverse_proxy candidate:3000 {
+			header_up Host app.devcaught.test:8443
+			header_up X-Forwarded-Host app.devcaught.test:8443
+			header_up X-Forwarded-Proto https
+			header_up X-Forwarded-Port 8443
+			header_up X-Forwarded-For {http.request.remote.host}
+		}
+	}
+	handle {
+		respond "Misdirected request" 421
+	}
+}
+
+# Same-site sibling and separate cross-site browser origins. Neither proxies to
+# the application. These fixed responses contain no fixture or authentication data.
+https://other.devcaught.test, https://outside.devcaught-other.test {
+	tls internal
+	respond "Isolated browser origin; no application proxy." 200
+}

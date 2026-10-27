@@ -1,0 +1,9 @@
+ARG HISTORICAL_IMAGE
+FROM ${HISTORICAL_IMAGE}
+USER root
+WORKDIR /app
+COPY launch.mjs /smtp-test-launch.mjs
+COPY ingestion-bootstrap.mjs /app/ingestion-bootstrap.mjs
+COPY diagnostics.mjs /app/diagnostics.mjs
+COPY launcher-preflight-entry.mjs /app/launcher-preflight-entry.mjs
+ENTRYPOINT ["node", "/app/launcher-preflight-entry.mjs"]

@@ -1,6 +1,7 @@
 import { getRequest } from "@tanstack/react-start/server";
-import { gateIdentityEnabled } from "./gate-identity.server";
-import { auth, authConfigured } from "./server";
+import { verifiedSessionUser } from "./session-policy.ts";
+import { AUTH_MISCONFIGURED_MESSAGE } from "./auth-config";
+import { auth, authConfigured, authRequested } from "./server";
 
 /**
  * Server-side session resolution (server-only).
@@ -18,7 +19,7 @@ const databaseConfigured = Boolean(process.env.DATABASE_URL?.trim());
 /** Re-export so callers can branch on it without importing `server.ts`. */
 export { authConfigured };
 
-if (databaseConfigured && !authConfigured) {
+if (!authRequested && databaseConfigured) {
   console.error(
     "[auth] DATABASE_URL is set but auth is disabled (VITE_AUTH_ENABLED=false) " +
       "— requireUserId() will reject every request (fail closed) rather than " +
@@ -48,50 +49,41 @@ export type VerifiedUser = { id: string; email: string | null };
  * Resolve the signed-in user from the current request, or `null` when auth isn't
  * configured / nobody is signed in. Safe to call from server functions and SSR
  * loaders.
- *
- * `bearerToken` is for the LIVE PREVIEW: the app runs in a partitioned iframe
- * whose cookies don't reach the server, so `authMiddleware` forwards the session
- * as a bearer token, which we present as `Authorization: Bearer …` (the `bearer`
- * plugin resolves it). When deployed no token is passed and the cookie is used.
  */
-export async function getSessionUser(
-  bearerToken?: string,
-): Promise<VerifiedUser | null> {
-  if (!authConfigured && !gateIdentityEnabled()) return null;
+export async function getSessionUser(): Promise<VerifiedUser | null> {
+  if (!authConfigured) return null;
   const request = getRequest();
   if (!request) return null;
-  let headers = request.headers;
-  if (bearerToken) {
-    headers = new Headers(request.headers);
-    headers.set("Authorization", `Bearer ${bearerToken}`);
-  }
-  const session = await auth.api.getSession({ headers });
-  if (!session?.user) return null;
-  return { id: session.user.id, email: session.user.email ?? null };
+  return verifiedSessionUser(auth, request.headers, authConfigured);
 }
 
 /**
  * Resolve the current user id for a server function, or throw when unauthorized.
  * Prefer `authMiddleware` (`./middleware`), which calls this for you.
- * - Auth enabled -> the verified session user id; throws
- *   `UnauthorizedError` when signed out. Works in the sandbox preview too (real
- *   sign-in via the baked preview client).
- * - Auth disabled (`VITE_AUTH_ENABLED=false`) + `DATABASE_URL` set -> throw (fail
- *   closed): one shared dev user on a real database would let every visitor
- *   read/write everyone's rows.
- * - Auth disabled + no database -> the shared dev user id.
+ * - Auth explicitly off (`VITE_AUTH_ENABLED=false`) + no `DATABASE_URL` -> the
+ *   rejects (Phase 1 does not authenticate development identities).
+ * - Auth explicitly off + `DATABASE_URL` set -> throw (fail closed): one
+ *   shared dev user on a real database would let every visitor read/write
+ *   everyone's rows.
+ * - Auth requested but NO method configured -> throw (fail closed): sign-in
+ *   was asked for, so falling back to the dev user would silently bypass it.
+ * - Auth configured -> the verified session user id; throws
+ *   `UnauthorizedError` when signed out.
  */
-export async function requireUserId(bearerToken?: string): Promise<string> {
-  if (!authConfigured && !gateIdentityEnabled()) {
+export async function requireUserId(): Promise<string> {
+  if (!authRequested) {
     if (databaseConfigured) {
       throw new Error(
         "Auth is disabled (VITE_AUTH_ENABLED=false) but DATABASE_URL is set — " +
           "refusing to fall back to the shared dev user against a real database.",
       );
     }
-    return DEV_USER_ID;
+    throw new UnauthorizedError();
   }
-  const user = await getSessionUser(bearerToken);
+  if (!authConfigured) {
+    throw new Error(AUTH_MISCONFIGURED_MESSAGE);
+  }
+  const user = await getSessionUser();
   if (!user) throw new UnauthorizedError();
   return user.id;
 }

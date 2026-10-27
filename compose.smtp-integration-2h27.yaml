@@ -1,0 +1,19 @@
+services:
+  smtp-test:
+    image: devcaught:smtp-routing-integration-2h27
+    container_name: devcaught-smtp-routing-2h27
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETUID, SETGID, KILL, DAC_OVERRIDE, FOWNER]
+    labels:
+      devcaught.smtp-run: ${DEVCAUGHT_SMTP_RUN:?}
+  verifier:
+    image: ${DEVCAUGHT_SMTP_VERIFIER_IMAGE:?}
+    container_name: devcaught-smtp-routing-verifier-2h27
+    labels:
+      devcaught.smtp-run: ${DEVCAUGHT_SMTP_RUN:?}
+volumes:
+  smtp_test_data:
+    name: devcaught_smtp_routing_2h27_data
+networks:
+  smtp_test_net:
+    name: devcaught_smtp_routing_2h27_net

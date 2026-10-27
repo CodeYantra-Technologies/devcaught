@@ -1,3 +1,5 @@
+import { useVerifiedUser } from "../auth/VerifiedSessionBoundary";
+import { privateInboxKey } from "../../lib/inbox/browser-access.ts";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Search } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -16,21 +18,20 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { WebhookSetup } from "./WebhookSetup";
 import { MessageDetail } from "./MessageDetail";
 import { MessageList } from "./MessageList";
 
 export function InboxPage() {
+  const user = useVerifiedUser();
   const queryClient = useQueryClient();
   const [kind, setKind] = useState("all");
-  const [showWebhook, setShowWebhook] = useState(false);
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [mobileShowDetail, setMobileShowDetail] = useState(false);
 
   const messages = useQuery({
-    queryKey: ["messages", query],
-    queryFn: () => fetchMessages(query),
+    queryKey: privateInboxKey(user.id, "messages", query),
+    queryFn: ({ signal }) => fetchMessages(query, signal),
     refetchInterval: 2000,
   });
 
@@ -39,8 +40,8 @@ export function InboxPage() {
     onSuccess: async () => {
       setSelectedId(null);
       setMobileShowDetail(false);
-      await queryClient.invalidateQueries({ queryKey: ["messages"] });
-      await queryClient.invalidateQueries({ queryKey: ["status"] });
+      await queryClient.invalidateQueries({ queryKey: privateInboxKey(user.id, "messages") });
+      await queryClient.invalidateQueries({ queryKey: privateInboxKey(user.id, "status") });
     },
   });
 
@@ -78,12 +79,9 @@ export function InboxPage() {
           <div>
             <h1 className="font-display text-2xl tracking-tight">Inbox</h1>
             <p className="mt-1 text-sm text-muted">
-              Messages caught from your development environment.
+              Messages visible only to your signed-in account.
             </p>
           </div>
-          <Button variant="secondary" onClick={() => setShowWebhook(!showWebhook)}>
-            {showWebhook ? "Close webhook setup" : "Catch webhook"}
-          </Button>
           <AlertDialog>
             <AlertDialogTrigger asChild>
               <Button variant="secondary" disabled={count === 0}>
@@ -94,7 +92,7 @@ export function InboxPage() {
               <AlertDialogHeader>
                 <AlertDialogTitle>Clear the inbox?</AlertDialogTitle>
                 <AlertDialogDescription>
-                  This permanently deletes every caught message on this machine.
+                  This permanently deletes every message in your private inbox.
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
@@ -114,7 +112,7 @@ export function InboxPage() {
           />
         </div>
         <div className="mt-3 flex flex-wrap gap-2" aria-label="Filter messages">
-          {["all", "email", "webhook", "payment", "order", "transaction"].map((value) => (
+          {["all", "email", "webhook", "payment", "order", "transaction", "sms"].map((value) => (
             <Button
               key={value}
               size="sm"
@@ -136,18 +134,6 @@ export function InboxPage() {
           </p>
         ) : null}
       </header>
-      {showWebhook ? (
-        <div className="max-h-96 overflow-auto border-b border-border p-4">
-          <WebhookSetup
-            onCaught={(id) => {
-              setKind("all");
-              setQuery("");
-              setShowWebhook(false);
-              selectMessage(id);
-            }}
-          />
-        </div>
-      ) : null}
 
       <div className="min-h-0 flex-1">
         <div className="hidden h-full lg:block">

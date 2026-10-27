@@ -8,6 +8,10 @@
 // You should NOT make any changes in this file as it will be overwritten.
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
+import { Route as LoginRouteImport } from './routes/login'
+import { Route as RegisterRouteImport } from './routes/register'
+import { Route as AccountRouteImport } from './routes/account'
+import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as SettingsRouteImport } from './routes/settings'
@@ -21,6 +25,26 @@ import { Route as ApiWebhooksIndexRouteImport } from './routes/api/webhooks/inde
 import { Route as ApiWebhooksSplatRouteImport } from './routes/api/webhooks/$'
 import { Route as ApiMessagesIdRawRouteImport } from './routes/api/messages/$id/raw'
 
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const RegisterRoute = RegisterRouteImport.update({
+  id: '/register',
+  path: '/register',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AccountRoute = AccountRouteImport.update({
+  id: '/account',
+  path: '/account',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
+  id: '/api/auth/$',
+  path: '/api/auth/$',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
@@ -78,6 +102,10 @@ const ApiMessagesIdRawRoute = ApiMessagesIdRawRouteImport.update({
 } as any)
 
 export interface FileRoutesByFullPath {
+  '/api/auth/$': typeof ApiAuthSplatRoute
+  '/account': typeof AccountRoute
+  '/register': typeof RegisterRoute
+  '/login': typeof LoginRoute
   '/': typeof IndexRoute
   '/settings': typeof SettingsRoute
   '/api/health': typeof ApiHealthRoute
@@ -91,6 +119,10 @@ export interface FileRoutesByFullPath {
   '/api/messages/$id/raw': typeof ApiMessagesIdRawRoute
 }
 export interface FileRoutesByTo {
+  '/api/auth/$': typeof ApiAuthSplatRoute
+  '/account': typeof AccountRoute
+  '/register': typeof RegisterRoute
+  '/login': typeof LoginRoute
   '/': typeof IndexRoute
   '/settings': typeof SettingsRoute
   '/api/health': typeof ApiHealthRoute
@@ -104,6 +136,10 @@ export interface FileRoutesByTo {
   '/api/messages/$id/raw': typeof ApiMessagesIdRawRoute
 }
 export interface FileRoutesById {
+  '/api/auth/$': typeof ApiAuthSplatRoute
+  '/account': typeof AccountRoute
+  '/register': typeof RegisterRoute
+  '/login': typeof LoginRoute
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/settings': typeof SettingsRoute
@@ -120,6 +156,10 @@ export interface FileRoutesById {
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
+    | '/api/auth/$'
+    | '/account'
+    | '/register'
+    | '/login'
     | '/'
     | '/settings'
     | '/api/health'
@@ -133,6 +173,10 @@ export interface FileRouteTypes {
     | '/api/messages/$id/raw'
   fileRoutesByTo: FileRoutesByTo
   to:
+    | '/api/auth/$'
+    | '/account'
+    | '/register'
+    | '/login'
     | '/'
     | '/settings'
     | '/api/health'
@@ -145,6 +189,10 @@ export interface FileRouteTypes {
     | '/api/webhooks'
     | '/api/messages/$id/raw'
   id:
+    | '/api/auth/$'
+    | '/account'
+    | '/register'
+    | '/login'
     | '__root__'
     | '/'
     | '/settings'
@@ -160,6 +208,10 @@ export interface FileRouteTypes {
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
+  ApiAuthSplatRoute: typeof ApiAuthSplatRoute
+  AccountRoute: typeof AccountRoute
+  RegisterRoute: typeof RegisterRoute
+  LoginRoute: typeof LoginRoute
   IndexRoute: typeof IndexRoute
   SettingsRoute: typeof SettingsRoute
   ApiHealthRoute: typeof ApiHealthRoute
@@ -174,6 +226,34 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/api/auth/$': {
+      id: '/api/auth/$'
+      path: '/api/auth/$'
+      fullPath: '/api/auth/$'
+      preLoaderRoute: typeof ApiAuthSplatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/account': {
+      id: '/account'
+      path: '/account'
+      fullPath: '/account'
+      preLoaderRoute: typeof AccountRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/register': {
+      id: '/register'
+      path: '/register'
+      fullPath: '/register'
+      preLoaderRoute: typeof RegisterRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -267,6 +347,10 @@ const ApiMessagesIdRouteWithChildren = ApiMessagesIdRoute._addFileChildren(
 )
 
 const rootRouteChildren: RootRouteChildren = {
+  ApiAuthSplatRoute,
+  AccountRoute,
+  RegisterRoute,
+  LoginRoute,
   IndexRoute: IndexRoute,
   SettingsRoute: SettingsRoute,
   ApiHealthRoute: ApiHealthRoute,

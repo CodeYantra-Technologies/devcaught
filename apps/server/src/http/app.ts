@@ -1,6 +1,8 @@
+import { requireGenericWebhookAccess } from "./access-policy.ts";
 import express from "express";
 import { normalizeWebhook, WEBHOOK_SIZE_LIMIT } from "../ingest/normalizeWebhook.ts";
 import type { DevCaughtRuntime } from "../runtime.ts";
+import { createTwilioWebhookHandler } from "../ingest/twilioWebhook.ts";
 import {
   handleClear,
   handleDelete,
@@ -27,8 +29,31 @@ function send(res: express.Response, result: HandlerResult) {
 export function createApiApp(runtime: DevCaughtRuntime): express.Express {
   const app = express();
   app.disable("x-powered-by");
+
+  // Dedicated authenticated Twilio webhook. Registered before the generic
+  // catch-all so /webhooks/twilio is never shadowed by /webhooks/{*name};
+  // the handler fails closed (no persistence) when Twilio is not configured.
+  const twilioConfig = runtime.config;
+  app.post(
+    "/webhooks/twilio",
+    express.raw({ type: () => true, limit: WEBHOOK_SIZE_LIMIT, inflate: false }),
+    createTwilioWebhookHandler(
+      twilioConfig ?? {},
+      (msg, dedupeKey) => runtime.inbox.ingestSms(msg, dedupeKey),
+      runtime.privateSmsIngest,
+    ),
+  );
+
   app.post(
     ["/webhooks", "/webhooks/{*name}"],
+    (_req, res, next) => {
+      const access = requireGenericWebhookAccess();
+      if (!access.allowed) {
+        res.status(access.status).json({ error: access.error });
+        return;
+      }
+      next();
+    },
     express.raw({ type: () => true, limit: WEBHOOK_SIZE_LIMIT, inflate: false }),
     (req, res) => {
       const headers = Object.fromEntries(
@@ -44,6 +69,19 @@ export function createApiApp(runtime: DevCaughtRuntime): express.Express {
       res.status(201).json({ id: stored.id, ok: true });
     },
   );
+  // Temporary fail-closed boundary until authenticated API access is implemented.
+  app.use((req, res, next) => {
+    if (
+      req.path === "/messages" ||
+      req.path.startsWith("/messages/") ||
+      req.path === "/status"
+    ) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+    next();
+  });
+
   app.use(express.json({ limit: "1mb" }));
 
   app.get("/health", (_req, res) => send(res, handleHealth()));

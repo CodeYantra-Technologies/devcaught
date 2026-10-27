@@ -1,6 +1,14 @@
 import { z } from "zod";
 import { PRODUCT_NAME } from "../../../../packages/shared/src/constants.ts";
 import type { DevCaughtRuntime } from "../runtime.ts";
+import type { ScopedInboxStore } from "../store/sqlite.ts";
+
+/** Message handlers need only a scoped store and its matching ingest service. */
+export type MessageRuntime = {
+  store: ScopedInboxStore;
+  inbox: DevCaughtRuntime["inbox"];
+  normalizeTestEmail: DevCaughtRuntime["normalizeTestEmail"];
+};
 
 export interface HandlerResult {
   status: number;
@@ -39,11 +47,11 @@ export function handleStatus(runtime: DevCaughtRuntime): HandlerResult {
   };
 }
 
-export function handleList(runtime: DevCaughtRuntime, query?: string): HandlerResult {
+export function handleList(runtime: MessageRuntime, query?: string): HandlerResult {
   return { status: 200, body: { messages: runtime.store.list(query) } };
 }
 
-export function handleGet(runtime: DevCaughtRuntime, id: string): HandlerResult {
+export function handleGet(runtime: MessageRuntime, id: string): HandlerResult {
   const parsed = idSchema.safeParse(id);
   if (!parsed.success) return { status: 400, body: { error: "Invalid message id" } };
   const message = runtime.store.get(parsed.data);
@@ -51,7 +59,7 @@ export function handleGet(runtime: DevCaughtRuntime, id: string): HandlerResult 
   return { status: 200, body: message };
 }
 
-export function handleRaw(runtime: DevCaughtRuntime, id: string): HandlerResult {
+export function handleRaw(runtime: MessageRuntime, id: string): HandlerResult {
   const parsed = idSchema.safeParse(id);
   if (!parsed.success) return { status: 400, body: { error: "Invalid message id" } };
   const raw = runtime.store.getRaw(parsed.data);
@@ -59,7 +67,7 @@ export function handleRaw(runtime: DevCaughtRuntime, id: string): HandlerResult 
   return { status: 200, text: raw, contentType: "text/plain; charset=utf-8" };
 }
 
-export function handleDelete(runtime: DevCaughtRuntime, id: string): HandlerResult {
+export function handleDelete(runtime: MessageRuntime, id: string): HandlerResult {
   const parsed = idSchema.safeParse(id);
   if (!parsed.success) return { status: 400, body: { error: "Invalid message id" } };
   const deleted = runtime.store.delete(parsed.data);
@@ -67,12 +75,12 @@ export function handleDelete(runtime: DevCaughtRuntime, id: string): HandlerResu
   return { status: 200, body: { ok: true } };
 }
 
-export function handleClear(runtime: DevCaughtRuntime): HandlerResult {
+export function handleClear(runtime: MessageRuntime): HandlerResult {
   const deleted = runtime.store.clear();
   return { status: 200, body: { ok: true, deleted } };
 }
 
-export function handleTestEmail(runtime: DevCaughtRuntime, input: unknown): HandlerResult {
+export function handleTestEmail(runtime: MessageRuntime, input: unknown): HandlerResult {
   const parsed = testEmailSchema.safeParse(input);
   if (!parsed.success) {
     return { status: 400, body: { error: "Invalid test email", details: parsed.error.flatten() } };

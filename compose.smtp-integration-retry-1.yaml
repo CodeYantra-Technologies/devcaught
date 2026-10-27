@@ -1,0 +1,12 @@
+services:
+  smtp-test:
+    image: devcaught:smtp-routing-integration-retry-1
+    container_name: devcaught-smtp-routing-retry-1
+  verifier:
+    container_name: devcaught-smtp-routing-retry-verifier-1
+volumes:
+  smtp_test_data:
+    name: devcaught_smtp_routing_retry_1_data
+networks:
+  smtp_test_net:
+    name: devcaught_smtp_routing_retry_1_net
