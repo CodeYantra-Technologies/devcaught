@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 import { describe, it, type TestContext } from "node:test";
 import { SMTPServer, type SMTPServerDataStream, type SMTPServerSession } from "smtp-server";
+import { SMTPConnection } from "smtp-server/lib/smtp-connection.js";
 import type { NormalizedMessage } from "../../../../packages/shared/src/types.ts";
 import type { InboxService } from "../ingest/inboxService.ts";
 import {
@@ -141,7 +142,65 @@ function syntheticEmail(to: string, body = "Synthetic verification code: 482913.
   ].join("\r\n");
 }
 
+function createProtocolHarness(server: SMTPServer) {
+  const replies: Array<{ code: number; message: string }> = [];
+  const connection = Object.create(SMTPConnection.prototype) as SMTPConnection;
+  Object.assign(connection, {
+    _server: server,
+    _ready: true,
+    _closing: false,
+    _closed: false,
+    _upgrading: false,
+    _nextHandler: false,
+    _handlerPending: false,
+    _unrecognizedCommands: 0,
+    _unauthenticatedCommands: 0,
+    _maxAllowedUnauthenticatedCommands: false,
+    session: { user: false },
+    name: "synthetic-client.invalid",
+    clientHostname: "synthetic-client.invalid",
+    hostNameAppearsAs: false,
+    secure: false,
+    _resetSession() {},
+    _proxyCommandAllowed() { return false; },
+    _whenWritable(next: () => void) { next(); },
+    send(code: number, data?: string | string[] | null) {
+      replies.push({ code, message: Array.isArray(data) ? data.join("\n") : data ?? "" });
+    },
+  });
+  return { connection, replies };
+}
+
+function issueCommand(connection: SMTPConnection, command: string): Promise<void> {
+  return new Promise((resolve) => connection._onCommand(Buffer.from(command), resolve));
+}
+
 describe("SMTP receiver offline callbacks", { concurrency: false }, () => {
+  it("does not advertise STARTTLS in the EHLO response", async (t) => {
+    const h = await createHarness(t);
+    const protocol = createProtocolHarness(h.server);
+
+    protocol.connection.handler_EHLO(Buffer.from("EHLO synthetic-client.invalid"), () => {});
+
+    assert.equal(protocol.replies[0]?.code, 250);
+    assert.doesNotMatch(protocol.replies[0]?.message ?? "", /STARTTLS/i);
+    assert.equal(h.server.options.hideSTARTTLS, true);
+  });
+
+  it("rejects direct STARTTLS and AUTH commands", async (t) => {
+    const h = await createHarness(t);
+    const protocol = createProtocolHarness(h.server);
+
+    await issueCommand(protocol.connection, "STARTTLS");
+    assert.equal(protocol.replies[0]?.code, 500);
+    assert.match(protocol.replies[0]?.message ?? "", /command not recognized/i);
+
+    await issueCommand(protocol.connection, "AUTH PLAIN synthetic-auth-data");
+    assert.equal(protocol.replies[1]?.code, 500);
+    assert.match(protocol.replies[1]?.message ?? "", /command not recognized/i);
+    assert.deepEqual(h.server.options.disabledCommands, ["AUTH", "STARTTLS"]);
+  });
+
   it("parses, normalizes, and ingests a synthetic email", async (t) => {
     const h = await createHarness(t);
     const session = createSession();

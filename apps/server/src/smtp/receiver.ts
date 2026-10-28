@@ -134,7 +134,7 @@ export async function startSmtpReceiver(
   const active = new WeakMap<object, () => void>();
   const server = new SMTPServer({
     banner: "DevCaught",
-    disabledCommands: ["AUTH"],
+    disabledCommands: ["AUTH", "STARTTLS"],
     authOptional: true,
     hideSTARTTLS: true,
     size: config.smtpSizeLimit,
