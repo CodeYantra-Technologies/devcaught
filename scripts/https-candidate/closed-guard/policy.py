@@ -10,7 +10,8 @@ FILES = (
     'package.json', 'package-lock.json', 'tsconfig.json', 'vite.config.ts',
     'apps/server/package.json', 'packages/shared/package.json',
     'packages/parsers/package.json', 'scripts/app-env-plugin.mjs',
-    'scripts/migration-plan.mjs', 'scripts/candidate/launch.mjs',
+    'scripts/migration-plan.mjs', 'scripts/sign-out-plan.mjs',
+    'scripts/candidate/launch.mjs',
 )
 TREES = ('src', 'apps/server/src', 'packages/shared/src', 'packages/parsers/src',
          'public', 'migrations')

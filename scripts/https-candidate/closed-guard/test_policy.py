@@ -27,6 +27,14 @@ class ClosedGuardPolicyTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertTrue(allowed_file(path))
 
+    def test_exact_sign_out_script_is_allowed_without_allowing_scripts_tree(self):
+        self.assertTrue(allowed_file('scripts/sign-out-plan.mjs'))
+        self.assertFalse(allowed_file('scripts/unreviewed-tool.mjs'))
+
+    def test_preview_module_remains_excluded(self):
+        self.assertTrue(excluded('src/lib/auth/preview.ts'))
+        self.assertFalse(allowed_file('src/lib/auth/preview.ts'))
+
     def test_unrelated_json_sql_and_markdown_are_not_broadly_allowed(self):
         paths = (
             'src/lib/og/other.json',
