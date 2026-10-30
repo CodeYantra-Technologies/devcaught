@@ -17,6 +17,12 @@ const execFileAsync = promisify(execFile);
 const WRAPPER = join(projectRoot(), "scripts/with-app-env.mjs");
 const PRINT_FLAG = "process.stdout.write(String(process.env.VITE_AUTH_ENABLED));";
 
+function envWithoutAuthOverride() {
+  const env = { ...process.env };
+  delete env.VITE_AUTH_ENABLED;
+  return env;
+}
+
 function makeWorkspace(appEnvJson) {
   const root = mkdtempSync(join(tmpdir(), "app-env-"));
   if (appEnvJson !== undefined) {
@@ -59,8 +65,13 @@ test("an explicit process-env override wins over the file", () => {
   assert.equal(merged.PATH, "/usr/bin");
 });
 
-test("the template ships auth off", () => {
-  assert.deepEqual(readAppEnv(projectRoot()), { VITE_AUTH_ENABLED: "false" });
+test("an explicit false process-env override is preserved", () => {
+  assert.equal(mergeAppEnv({}, { VITE_AUTH_ENABLED: "false" }).VITE_AUTH_ENABLED, "false");
+});
+
+test("a missing project app-env file adds no auth override", () => {
+  assert.deepEqual(readAppEnv(projectRoot()), {});
+  assert.equal(mergeAppEnv(readAppEnv(projectRoot()), {}).VITE_AUTH_ENABLED, undefined);
 });
 
 test("vite loadEnv resolves the wrapped value", () => {
@@ -73,23 +84,32 @@ test("vite loadEnv resolves the wrapped value", () => {
   assert.equal(merged.VITE_AUTH_ENABLED, "false");
 });
 
-test("the wrapped command runs with the app env applied", async () => {
+test("the wrapped command leaves the absent project flag unset", async () => {
   const { stdout } = await execFileAsync(process.execPath, [
     WRAPPER,
     process.execPath,
     "-e",
     PRINT_FLAG,
-  ]);
-  assert.equal(stdout, "false");
+  ], { env: envWithoutAuthOverride() });
+  assert.equal(stdout, "undefined");
 });
 
 test("the wrapped command sees an explicit override, not the file value", async () => {
   const { stdout } = await execFileAsync(
     process.execPath,
     [WRAPPER, process.execPath, "-e", PRINT_FLAG],
-    { env: { ...process.env, VITE_AUTH_ENABLED: "true" } },
+    { env: { ...envWithoutAuthOverride(), VITE_AUTH_ENABLED: "true" } },
   );
   assert.equal(stdout, "true");
+});
+
+test("the wrapped command preserves an explicit false override", async () => {
+  const { stdout } = await execFileAsync(
+    process.execPath,
+    [WRAPPER, process.execPath, "-e", PRINT_FLAG],
+    { env: { ...envWithoutAuthOverride(), VITE_AUTH_ENABLED: "false" } },
+  );
+  assert.equal(stdout, "false");
 });
 
 test("the wrapper propagates the command's exit code", async () => {
@@ -123,6 +143,6 @@ test("the CLI still runs when invoked through a symlinked path", async () => {
     process.execPath,
     "-e",
     PRINT_FLAG,
-  ]);
-  assert.equal(stdout, "false");
+  ], { env: envWithoutAuthOverride() });
+  assert.equal(stdout, "undefined");
 });

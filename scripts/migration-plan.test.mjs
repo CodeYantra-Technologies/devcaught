@@ -56,16 +56,26 @@ test("non-.sql entries are dropped (readdir also yields the auth/ directory)", (
   assert.deepEqual(pendingMigrations(["auth", "README.md"], []), []);
 });
 
-test("Phase 1 migrations are discovered in order and respect applied history", () => {
+test("all current migrations are discovered in order and respect applied history", () => {
   const migrationsDir = join(projectRoot(), "migrations");
   const entries = readdirSync(migrationsDir);
+  const currentMigrations = [
+    "0001_auth.sql",
+    "0002_invitations.sql",
+    "0003_private_inboxes.sql",
+    "0004_private_inbox_routing.sql",
+  ];
   assert.deepEqual(
     pendingMigrations(entries, []).map(({ name }) => name),
-    ["0001_auth.sql", "0002_invitations.sql"],
+    currentMigrations,
   );
   assert.deepEqual(
     pendingMigrations(entries, ["0001_auth.sql"]).map(({ name }) => name),
-    ["0002_invitations.sql"],
+    currentMigrations.slice(1),
+  );
+  assert.deepEqual(
+    pendingMigrations(entries, ["0001_auth.sql", "0003_private_inboxes.sql"]).map(({ name }) => name),
+    ["0002_invitations.sql", "0004_private_inbox_routing.sql"],
   );
   assert.ok(existsSync(join(migrationsDir, "auth", "0001_auth.sql")));
 });
