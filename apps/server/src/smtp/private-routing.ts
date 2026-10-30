@@ -41,6 +41,12 @@ export function configuredPrivateSmtpDependencies(store: InboxStore, config: Dev
   const pool = new Pool({connectionString, max: 4, connectionTimeoutMillis: 4000,
     statement_timeout: 4000, idle_in_transaction_session_timeout: 5000});
   pool.on('error', () => { /* Failed lookups reject delivery; never log credentials. */ });
+  pool.on('connect', client => {
+    // pg-pool removes its idle error listener while a client is checked out.
+    // Keep a client-level listener for unexpected disconnect events throughout
+    // checkout; pg query promises still reject and the transaction remains fail-closed.
+    client.on('error', () => { /* Consume only the EventEmitter error; never log query or connection data. */ });
+  });
   const db = new Kysely<unknown>({dialect: new PostgresDialect({pool})});
   return {...privateSmtpDependencies(db, store, config), close: () => db.destroy()};
 }
