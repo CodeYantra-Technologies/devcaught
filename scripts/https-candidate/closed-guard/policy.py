@@ -25,6 +25,12 @@ DIGEST = re.compile(r'sha256:[0-9a-f]{64}\Z')
 MAX_FILE = 8 * 1024 * 1024
 MAX_TOTAL = 128 * 1024 * 1024
 MAX_FILES = 10000
+EXCLUDED_PATHS = frozenset((
+    'src/lib/inbox/PRIVATE_INBOX_ROUTING.md',
+    'src/lib/og/site.json',
+    'apps/server/src/smtp/PRIVATE_ROUTING.md',
+    'apps/server/src/store/schema.sql',
+))
 
 class Blocked(Exception):
     """Only fixed, non-sensitive reason categories belong in this exception."""
@@ -35,6 +41,8 @@ def require(condition, category):
 
 def excluded(relative):
     # Called on names BEFORE lstat/open/hash/copy. Never descend into exclusions.
+    if relative in EXCLUDED_PATHS:
+        return True
     p = PurePosixPath(relative)
     parts = p.parts
     return (p.is_absolute() or not parts or any(x in ('..', '.') for x in parts)
