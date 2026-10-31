@@ -69,7 +69,7 @@ export function invitationPlugin(): BetterAuthPlugin {
             if (!claimed) throw denied();
             const user = await ctx.context.internalAdapter.createUser({
               email, name: ctx.body.name, emailVerified: false,
-            });
+            }, { method: "email-password" });
             if (!user) throw denied();
             await adapter.create({
               model: "privateInbox",
