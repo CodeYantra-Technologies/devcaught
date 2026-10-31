@@ -1,6 +1,6 @@
 /**
  * Dev-only `/__app-env` endpoint: the client env the running Vite server
- * resolved, as JSON.
+ * resolved, exposing only VITE_AUTH_ENABLED as JSON.
  *
  * `scripts/check-auth-invariant.mjs` reads it to compare the live dev server's
  * `VITE_AUTH_ENABLED` against the value the next build will resolve. The
@@ -22,7 +22,7 @@ export function appEnvPlugin() {
           next();
           return;
         }
-        const body = Buffer.from(JSON.stringify(server.config.env), "utf8");
+        const body = Buffer.from(JSON.stringify({ VITE_AUTH_ENABLED: server.config.env.VITE_AUTH_ENABLED }), "utf8");
         res.statusCode = 200;
         res.setHeader("content-type", "application/json; charset=utf-8");
         res.setHeader("cache-control", "no-cache");
