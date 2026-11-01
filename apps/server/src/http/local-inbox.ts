@@ -5,7 +5,7 @@ import { ensureRuntime, type DevCaughtRuntime } from "../runtime.ts";
 
 const namespace = "/__devcaught/local-inbox";
 const capabilityPath = `${namespace}/health`;
-const MAX_PATH_DECODE_PASSES = 16;
+const MAX_PATH_DECODE_PASSES = 32;
 
 type RuntimeProvider = () => Promise<DevCaughtRuntime>;
 
@@ -23,15 +23,39 @@ function rawHeaderValues(req: IncomingMessage, name: string): string[] {
 }
 
 function matchesNamespacePrefix(path: string): boolean {
-  return path === namespace || path.startsWith(`${namespace}/`) ||
-    path.startsWith(`${namespace}%`) || path.startsWith(`${namespace}\\`);
+  // A decoded encoded-leading-slash alias can begin with `//`. Collapse only
+  // that leading run for comparison; do not rewrite request paths globally.
+  const candidate = path.replace(/^\/{2,}/, "/");
+  return candidate === namespace || candidate.startsWith(`${namespace}/`) ||
+    candidate.startsWith(`${namespace}%`) || candidate.startsWith(`${namespace}\\`);
+}
+
+function normalizedPathname(path: string): string {
+  // Resolve origin-form paths against a fixed origin with the leading slash
+  // already attached. This preserves `//` as path characters instead of
+  // letting WHATWG URL parsing reinterpret them as an authority.
+  const input = path.startsWith("/") ? `http://vite.invalid${path}` : path;
+  return new URL(input, "http://vite.invalid").pathname;
+}
+
+function decodeValidPercentEscapes(value: string): string {
+  // Decode escape bytes independently: one invalid UTF-8 byte such as %FF
+  // must not prevent valid ASCII prefix escapes later in the path from decoding.
+  return value.replace(/%[0-9a-f]{2}/gi, encoded => {
+    try {
+      return decodeURIComponent(encoded);
+    } catch {
+      return encoded;
+    }
+  });
 }
 
 /**
  * Recognize raw, URL-normalized and repeatedly encoded namespace prefixes.
- * Decoding is capped at 16 passes to bound work on adversarial request targets.
- * Any namespace alias recognized within that bound is consumed; ordinary
- * non-reserved paths are not claimed by this middleware.
+ * Decoding is capped at 32 passes. At the cap, any still-escaped path is
+ * ambiguous and consumed rather than sent to downstream middleware. Before
+ * the cap, no progress means remaining escapes are malformed or non-ASCII
+ * bytes; valid ASCII escapes have already been decoded independently.
  */
 function isReservedNamespace(target: string): boolean {
   const rawPath = target.split(/[?#]/, 1)[0] ?? "";
@@ -39,21 +63,17 @@ function isReservedNamespace(target: string): boolean {
   for (let pass = 0; pass <= MAX_PATH_DECODE_PASSES; pass++) {
     if (matchesNamespacePrefix(current)) return true;
     try {
-      const normalized = new URL(current, "http://vite.invalid").pathname;
+      const normalized = normalizedPathname(current);
       if (matchesNamespacePrefix(normalized)) return true;
     } catch {
       // Continue with the raw form; malformed reserved prefixes are consumed below.
     }
     if (pass === MAX_PATH_DECODE_PASSES) {
-      return false;
+      return current.includes("%");
     }
-    try {
-      const decoded = decodeURIComponent(current);
-      if (decoded === current) return false;
-      current = decoded;
-    } catch {
-      return false;
-    }
+    const decoded = decodeValidPercentEscapes(current);
+    if (decoded === current) return false;
+    current = decoded;
   }
   return false;
 }
@@ -168,7 +188,7 @@ export function createLocalInboxMiddleware(
 
       let pathname: string;
       try {
-        pathname = new URL(target, "http://vite.invalid").pathname;
+        pathname = normalizedPathname(target);
       } catch {
         send(res, 404, { ok: false, error: "Not found" });
         return;

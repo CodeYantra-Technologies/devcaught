@@ -7,6 +7,12 @@ import { createLocalInboxMiddleware } from "./local-inbox.ts";
 
 const path = "/__devcaught/local-inbox/health";
 
+function encodedLayers(value: string, layers: number): string {
+  let encoded = value;
+  for (let i = 0; i < layers; i++) encoded = encodeURIComponent(encoded);
+  return encoded;
+}
+
 function fixture(options: {
   address?: string;
   port?: number;
@@ -171,20 +177,39 @@ test("rejects cross-site Fetch Metadata and never falls through reserved paths",
     "/__devcaught%2flocal-inbox/health",
     "/__devcaught%2Flocal-inbox%2Fhealth",
     "/__devcaught%5clocal-inbox%5chealth",
+    "/%255f%5fdevcaught%2Flocal-inbox%252fhealth",
+    "/%5f%5fdevcaught%2flocal-inbox/%FF",
+    "/%5f%5fdevcaught%2flocal-inbox/%ZZ",
+    "/%5f%5fdevcaught%2flocal-inbox/%E0%ZZ",
     "/some/../__devcaught/local-inbox/health",
     "/__devcaught/local-inbox/health?mode=1",
     "/__devcaught/local-inbox/health#fragment",
+    "//__devcaught/local-inbox/health",
     encodeURIComponent(encodeURIComponent(path)),
+    `/%255f%255fdevcaught%252flocal-inbox%252fhealth/%ZZ`,
   ]) {
     const response = await request(middleware, { url });
     assert.equal(response.status, 404, url);
     assert.equal(response.fellThrough, false, url);
   }
   assert.equal((await request(middleware, { url: "/not-local-inbox" })).fellThrough, true);
+  assert.equal((await request(middleware, { url: "//ordinary/path" })).fellThrough, true);
+  assert.equal((await request(middleware, { url: "//ordinary/__devcaught/local-inbox/health" })).fellThrough, true);
   assert.equal((await request(middleware, { url: "/unrelated?next=/__devcaught/local-inbox/health" })).fellThrough, true);
-  let deeplyEncodedNonReserved = "/unrelated";
-  for (let i = 0; i < 18; i++) deeplyEncodedNonReserved = encodeURIComponent(deeplyEncodedNonReserved);
-  assert.equal((await request(middleware, { url: deeplyEncodedNonReserved })).fellThrough, true);
+  assert.equal((await request(middleware, { url: "/unrelated/%FF%2Fpath" })).fellThrough, true);
+  assert.equal((await request(middleware, { url: "/unrelated/%ZZ%2Fpath" })).fellThrough, true);
+  assert.equal((await request(middleware, { url: encodeURIComponent(encodeURIComponent("/unrelated/path")) })).fellThrough, true);
+  assert.equal((await request(middleware, { url: encodedLayers("/unrelated/path", 18) })).fellThrough, true);
+});
+
+test("deeply encoded reserved aliases are consumed within and beyond the decode bound", async () => {
+  const { middleware } = fixture();
+  for (const layers of [17, 18, 32, 33]) {
+    const alias = encodedLayers(path, layers);
+    const response = await request(middleware, { url: alias });
+    assert.equal(response.status, 404, `${layers}-layer alias cannot access health`);
+    assert.equal(response.fellThrough, false, `${layers}-layer alias is consumed`);
+  }
 });
 
 test("startup rejection fails closed without an unhandled rejection", async () => {
