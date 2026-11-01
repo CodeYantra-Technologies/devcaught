@@ -5,7 +5,14 @@ import { ensureRuntime, type DevCaughtRuntime } from "../runtime.ts";
 
 const namespace = "/__devcaught/local-inbox";
 const capabilityPath = `${namespace}/health`;
+const messagesPath = `${namespace}/messages`;
 const MAX_PATH_DECODE_PASSES = 32;
+const MAX_REQUEST_TARGET_LENGTH = 4_096;
+const MAX_QUERY_STRING_LENGTH = 2_048;
+const MAX_SEARCH_QUERY_LENGTH = 200;
+const MAX_CURSOR_LENGTH = 1_024;
+const DEFAULT_PAGE_SIZE = 20;
+const MAX_PAGE_SIZE = 50;
 
 type RuntimeProvider = () => Promise<DevCaughtRuntime>;
 
@@ -78,13 +85,91 @@ function isReservedNamespace(target: string): boolean {
   return false;
 }
 
-function send(res: ServerResponse, status: number, body: { ok: boolean; mode?: string; error?: string }): void {
+function send(res: ServerResponse, status: number, body: Record<string, unknown>): void {
   if (res.destroyed || res.writableEnded) return;
   res.statusCode = status;
   res.setHeader("cache-control", "no-store");
   res.setHeader("content-type", "application/json; charset=utf-8");
   res.setHeader("x-content-type-options", "nosniff");
   res.end(JSON.stringify(body));
+}
+
+type LocalRoute =
+  | { kind: "health" }
+  | { kind: "list"; limit: number; cursor?: string; query?: string }
+  | { kind: "detail"; id: string }
+  | { kind: "missing" }
+  | { kind: "bad-request" };
+
+function parseLocalRoute(target: string): LocalRoute {
+  if (target.length > MAX_REQUEST_TARGET_LENGTH) return { kind: "bad-request" };
+  const rawPath = target.split(/[?#]/, 1)[0] ?? "";
+  if (rawPath === capabilityPath) return target === capabilityPath ? { kind: "health" } : { kind: "missing" };
+  if (target.includes("#")) return rawPath === messagesPath || rawPath.startsWith(`${messagesPath}/`)
+    ? { kind: "bad-request" }
+    : { kind: "missing" };
+  if (rawPath !== messagesPath && !rawPath.startsWith(`${messagesPath}/`)) return { kind: "missing" };
+  if (rawPath === messagesPath) {
+    const rawQuery = target.includes("?") ? target.slice(target.indexOf("?") + 1) : "";
+    if (rawQuery.length > MAX_QUERY_STRING_LENGTH) return { kind: "bad-request" };
+    try {
+      // URLSearchParams is forgiving of malformed escapes, so validate UTF-8
+      // percent encodings before parsing and reject duplicate/unknown keys.
+      decodeURIComponent(rawQuery.replace(/\+/g, "%20"));
+    } catch {
+      return { kind: "bad-request" };
+    }
+    const params = new URLSearchParams(rawQuery);
+    const seen = new Set<string>();
+    for (const [key] of params) {
+      if (!new Set(["limit", "cursor", "query"]).has(key) || seen.has(key)) return { kind: "bad-request" };
+      seen.add(key);
+    }
+    const rawLimit = params.get("limit");
+    let limit = DEFAULT_PAGE_SIZE;
+    if (rawLimit !== null) {
+      if (!/^(?:[1-9]|[1-4][0-9]|50)$/.test(rawLimit)) return { kind: "bad-request" };
+      limit = Number(rawLimit);
+    }
+    const cursor = params.get("cursor") ?? undefined;
+    if (cursor !== undefined && (!cursor || cursor.length > MAX_CURSOR_LENGTH || !/^[A-Za-z0-9_-]+$/.test(cursor)))
+      return { kind: "bad-request" };
+    const query = params.get("query") ?? undefined;
+    if (
+      query !== undefined &&
+      (query.length > MAX_SEARCH_QUERY_LENGTH || /[\u0000-\u001f\u007f]/.test(query))
+    ) return { kind: "bad-request" };
+    return { kind: "list", limit, ...(cursor === undefined ? {} : { cursor }), ...(query === undefined ? {} : { query }) };
+  }
+
+  const id = rawPath.slice(messagesPath.length + 1);
+  if (!id || id.length > 128 || id.includes("/") || !/^[A-Za-z0-9_-]+$/.test(id)) return { kind: "bad-request" };
+  if (target.includes("?")) return { kind: "bad-request" };
+  return { kind: "detail", id };
+}
+
+function safeSummary(message: {
+  id: string;
+  type: string;
+  source: string;
+  sender: string;
+  recipient: string;
+  subject: string | null;
+  createdAt: number;
+  hasHtml: boolean;
+  hasText: boolean;
+}) {
+  return {
+    id: message.id,
+    type: message.type,
+    source: message.source,
+    sender: message.sender,
+    recipient: message.recipient,
+    subject: message.subject,
+    createdAt: message.createdAt,
+    hasHtml: message.hasHtml,
+    hasText: message.hasText,
+  };
 }
 
 function loopbackPeer(req: IncomingMessage): boolean {
@@ -167,6 +252,20 @@ export function createLocalInboxMiddleware(
         return;
       }
 
+      const route = parseLocalRoute(target);
+      if (route.kind === "bad-request") {
+        send(res, 400, { ok: false, error: "Invalid request" });
+        return;
+      }
+      if (route.kind === "missing") {
+        send(res, req.method === "GET" ? 404 : 405, { ok: false, error: req.method === "GET" ? "Not found" : "Method not allowed" });
+        return;
+      }
+      if (req.method !== "GET") {
+        send(res, 405, { ok: false, error: "Method not allowed" });
+        return;
+      }
+
       let runtime: DevCaughtRuntime;
       try {
         runtime = await getRuntime();
@@ -186,22 +285,43 @@ export function createLocalInboxMiddleware(
         return;
       }
 
-      let pathname: string;
+      if (route.kind === "health") {
+        send(res, 200, { ok: true, mode: "local-capture" });
+        return;
+      }
+      if (!runtime.store || typeof runtime.store.forLocalCapture !== "function") {
+        send(res, 503, { ok: false, error: "Unavailable" });
+        return;
+      }
       try {
-        pathname = normalizedPathname(target);
-      } catch {
-        send(res, 404, { ok: false, error: "Not found" });
-        return;
+        const localStore = runtime.store.forLocalCapture();
+        if (route.kind === "list") {
+          const page = localStore.listPage({ limit: route.limit, cursor: route.cursor, query: route.query });
+          send(res, 200, {
+            ok: true,
+            items: page.items.map(safeSummary),
+            hasMore: page.hasMore,
+            nextCursor: page.nextCursor,
+          });
+          return;
+        }
+        if (typeof localStore.getLocalSmtp !== "function") {
+          send(res, 503, { ok: false, error: "Unavailable" });
+          return;
+        }
+        const message = localStore.getLocalSmtp(route.id);
+        if (!message) {
+          send(res, 404, { ok: false, error: "Not found" });
+          return;
+        }
+        send(res, 200, { ok: true, message: { ...safeSummary(message), textBody: message.textBody } });
+      } catch (error) {
+        if (error instanceof Error && error.message === "Invalid local capture pagination cursor") {
+          send(res, 400, { ok: false, error: "Invalid request" });
+          return;
+        }
+        send(res, 503, { ok: false, error: "Unavailable" });
       }
-      if (target !== capabilityPath || pathname !== capabilityPath) {
-        send(res, req.method === "GET" ? 404 : 405, { ok: false, error: "Not found" });
-        return;
-      }
-      if (req.method !== "GET") {
-        send(res, 405, { ok: false, error: "Method not allowed" });
-        return;
-      }
-      send(res, 200, { ok: true, mode: "local-capture" });
     })().catch(() => {
       // No asynchronous failure may escape into Vite's error handling or fall through.
       if (!res.headersSent && !res.destroyed && !res.writableEnded)

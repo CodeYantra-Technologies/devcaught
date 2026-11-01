@@ -3,6 +3,7 @@ import { test } from "node:test";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ViteDevServer } from "vite";
 import type { DevCaughtRuntime } from "../runtime.ts";
+import { openInboxStore, type InboxStore } from "../store/sqlite.ts";
 import { createLocalInboxMiddleware } from "./local-inbox.ts";
 
 const path = "/__devcaught/local-inbox/health";
@@ -22,6 +23,7 @@ function fixture(options: {
   livePreview?: boolean;
   runtimeFailure?: boolean;
   getRuntime?: () => Promise<DevCaughtRuntime>;
+  store?: InboxStore;
 } = {}) {
   const address = options.address ?? "127.0.0.1";
   const port = options.port ?? 8080;
@@ -31,6 +33,7 @@ function fixture(options: {
   const runtime = {
     config: { smtpRoutingMode: options.mode ?? "local", host: options.smtpHost ?? "127.0.0.1" },
     smtp: { status: { running: options.smtpRunning ?? true, host: options.smtpHost ?? "127.0.0.1" } },
+    store: options.store,
   } as unknown as DevCaughtRuntime;
   const middleware = createLocalInboxMiddleware(
     server,
@@ -229,7 +232,7 @@ test("revoked middleware denies requests and never writes after async runtime re
       return pendingRuntime;
     },
   });
-  const inFlight = startRequest(middleware);
+  const inFlight = startRequest(middleware, { url: "/__devcaught/local-inbox/messages" });
   await started;
   inFlight.disconnect();
   resolveRuntime(runtime);
@@ -276,4 +279,153 @@ test("encoded namespace variants are consumed even when their route is invalid",
   const response = await request(fixture().middleware, { url: "/%5f%5fdevcaught/local-inbox/health" });
   assert.equal(response.status, 404);
   assert.equal(response.fellThrough, false);
+});
+
+function email(id: string, subject: string, createdAt: number) {
+  return {
+    id,
+    type: "email" as const,
+    source: "smtp" as const,
+    sender: "sender@example.test",
+    recipient: "developer@example.test",
+    subject,
+    textBody: `Plain OTP body ${subject}`,
+    htmlBody: `<html><body>HTML SECRET ${subject}</body></html>`,
+    rawData: `RAW MIME SECRET ATTACHMENT SECRET ${subject}`,
+    detections: [{
+      type: "otp" as const,
+      value: "482913",
+      confidence: 0.99,
+      label: "One-time code",
+      metadata: { secret: "must-not-serialize" },
+    }],
+    createdAt,
+  };
+}
+
+test("lists and details only trusted local SMTP records with allowlisted fields", async t => {
+  const { store } = openInboxStore(":memory:");
+  t.after(() => store.close());
+  const trusted = store.forLocalSmtpCapture();
+  const privateInbox = store.forInbox("private-inbox-a");
+  trusted.insert(email("smtp-new", "trusted newest", 3_000));
+  trusted.insert(email("smtp-old", "trusted older", 2_000));
+  store.insert(email("root-smtp", "root smtp", 9_000));
+  store.insert({ ...email("root-test", "root test email", 8_500), source: "test" } as never);
+  store.insert({ ...email("root-webhook", "root webhook", 8_000), type: "webhook", source: "http" } as never);
+  store.insertSms({ ...email("root-sms", "root sms", 7_000), type: "sms", source: "http", dedupeKey: null } as never);
+  store.forLocalCapture().insert(email("legacy-null", "legacy untrusted", 6_000));
+  const privateMessage = privateInbox.insert(email("private-smtp", "private smtp", 10_000));
+
+  const { middleware } = fixture({ store });
+  const first = await request(middleware, { url: "/__devcaught/local-inbox/messages?limit=1" });
+  assert.equal(first.status, 200);
+  assert.equal(first.headers["cache-control"], "no-store");
+  assert.equal(first.headers["content-type"], "application/json; charset=utf-8");
+  assert.equal(first.headers["x-content-type-options"], "nosniff");
+  const firstBody = JSON.parse(first.body) as { items: Array<Record<string, unknown>>; hasMore: boolean; nextCursor: string };
+  assert.deepEqual(firstBody.items.map(item => item.id), ["smtp-new"]);
+  assert.equal(firstBody.hasMore, true);
+  assert.ok(firstBody.nextCursor);
+  assert.deepEqual(Object.keys(firstBody.items[0]!).sort(), [
+    "createdAt", "hasHtml", "hasText", "id", "recipient", "sender", "source", "subject", "type",
+  ]);
+  assert.equal("detections" in firstBody.items[0]!, false);
+  assert.ok(!first.body.includes("482913"));
+  assert.ok(!first.body.includes("HTML SECRET"));
+  assert.ok(!first.body.includes("RAW MIME SECRET"));
+  assert.ok(!first.body.includes("ATTACHMENT SECRET"));
+  assert.ok(!first.body.includes("must-not-serialize"));
+  assert.ok(!first.body.includes("private smtp"));
+
+  const second = await request(middleware, {
+    url: `/__devcaught/local-inbox/messages?limit=1&cursor=${firstBody.nextCursor}`,
+  });
+  assert.deepEqual((JSON.parse(second.body) as { items: Array<{ id: string }> }).items.map(item => item.id), ["smtp-old"]);
+  const search = await request(middleware, { url: "/__devcaught/local-inbox/messages?query=older" });
+  assert.deepEqual((JSON.parse(search.body) as { items: Array<{ id: string }> }).items.map(item => item.id), ["smtp-old"]);
+
+  const detail = await request(middleware, { url: "/__devcaught/local-inbox/messages/smtp-new" });
+  assert.equal(detail.status, 200);
+  const detailMessage = (JSON.parse(detail.body) as { message: Record<string, unknown> }).message;
+  assert.equal(detailMessage.textBody, "Plain OTP body trusted newest");
+  assert.equal(detailMessage.id, "smtp-new");
+  assert.deepEqual(Object.keys(detailMessage).sort(), [
+    "createdAt", "hasHtml", "hasText", "id", "recipient", "sender", "source", "subject", "textBody", "type",
+  ]);
+  assert.equal("detections" in detailMessage, false);
+  assert.ok(!detail.body.includes("482913"));
+  assert.ok(!detail.body.includes("HTML SECRET"));
+  assert.ok(!detail.body.includes("RAW MIME SECRET"));
+  assert.ok(!detail.body.includes("ATTACHMENT SECRET"));
+  assert.ok(!detail.body.includes("must-not-serialize"));
+
+  for (const id of ["root-smtp", "root-test", "root-webhook", "root-sms", "legacy-null", privateMessage.id]) {
+    const response = await request(middleware, { url: `/__devcaught/local-inbox/messages/${id}` });
+    assert.equal(response.status, 404, `${id} is outside trusted local SMTP provenance`);
+    assert.equal(response.fellThrough, false);
+  }
+});
+
+test("rejects malformed listing parameters, IDs, methods, and oversized requests", async t => {
+  const { store } = openInboxStore(":memory:");
+  t.after(() => store.close());
+  const { middleware } = fixture({ store });
+  for (const url of [
+    "/__devcaught/local-inbox/messages?limit=0",
+    "/__devcaught/local-inbox/messages?limit=01",
+    "/__devcaught/local-inbox/messages?limit=51",
+    "/__devcaught/local-inbox/messages?limit=1.5",
+    "/__devcaught/local-inbox/messages?cursor=%ZZ",
+    "/__devcaught/local-inbox/messages?query=%FF",
+    "/__devcaught/local-inbox/messages?limit=1&limit=2",
+    "/__devcaught/local-inbox/messages?unexpected=yes",
+    `/__devcaught/local-inbox/messages?query=${"x".repeat(201)}`,
+    `/__devcaught/local-inbox/messages?cursor=${"a".repeat(1_025)}`,
+    "/__devcaught/local-inbox/messages/",
+    "/__devcaught/local-inbox/messages/bad.id",
+    "/__devcaught/local-inbox/messages/%2fprivate",
+    `/__devcaught/local-inbox/messages/${"a".repeat(129)}`,
+    `/__devcaught/local-inbox/messages?query=${"x".repeat(4_100)}`,
+  ]) {
+    const response = await request(middleware, { url });
+    assert.equal(response.status, 400, url);
+    assert.equal(response.fellThrough, false, url);
+    assert.equal(response.headers["cache-control"], "no-store");
+  }
+
+  for (const method of ["POST", "PUT", "DELETE", "OPTIONS", "HEAD"]) {
+    const response = await request(middleware, {
+      url: "/__devcaught/local-inbox/messages",
+      method,
+      origin: "http://127.0.0.1:8080",
+      fetchSite: "same-origin",
+    });
+    assert.equal(response.status, 405, method);
+    assert.equal(response.fellThrough, false);
+  }
+  assert.equal((await request(middleware, { url: "/__devcaught/local-inbox/messages/no-such-id" })).status, 404);
+  assert.equal((await request(middleware, { url: "/__devcaught/local-inbox/messages", method: "POST" })).status, 403);
+});
+
+test("applies the existing local listener security gate and runtime lifecycle to data routes", async () => {
+  const localDataPath = "/__devcaught/local-inbox/messages";
+  for (const options of [
+    { host: "attacker.example:8080" },
+    { origin: "http://localhost:8080" },
+    { fetchSite: "cross-site" },
+    { forwardedHost: "127.0.0.1:8080" },
+  ]) {
+    assert.equal((await request(fixture().middleware, { url: localDataPath, ...options })).status, 403);
+  }
+  for (const options of [
+    { runtimeFailure: true },
+    { livePreview: true },
+    { smtpRunning: false },
+    { mode: "private" as const },
+    { smtpHost: "0.0.0.0" },
+  ]) {
+    assert.equal((await request(fixture(options).middleware, { url: localDataPath })).status, 503);
+  }
+  assert.equal((await request(fixture().middleware, { url: localDataPath })).status, 503, "missing storage readiness fails closed");
 });
