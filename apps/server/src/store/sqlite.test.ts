@@ -62,6 +62,154 @@ describe("InboxStore", () => {
   });
 });
 
+describe("local capture storage view", () => {
+  it("isolates every local read and mutation from private inbox rows in the same database", () => {
+    const { store } = openInboxStore(":memory:");
+    try {
+      const local = store.forLocalCapture();
+      const privateInbox = store.forInbox("private-inbox-a");
+      const localMessage = local.insert({
+        type: "email", source: "smtp", sender: "local@example.test", recipient: "dev@example.test",
+        subject: "Local OTP", textBody: "code 482913", htmlBody: "", rawData: "local raw",
+        detections: [], createdAt: 1_000,
+      });
+      const privateMessage = privateInbox.insert({
+        type: "email", source: "smtp", sender: "private@example.test", recipient: "owner@example.test",
+        subject: "Private secret", textBody: "private body", htmlBody: "", rawData: "private raw",
+        detections: [], createdAt: 2_000,
+      });
+
+      assert.deepEqual(local.list().map(message => message.id), [localMessage.id]);
+      assert.deepEqual(local.list("Local OTP").map(message => message.id), [localMessage.id]);
+      assert.deepEqual(local.list("Private secret"), []);
+      assert.equal(local.get(localMessage.id)?.subject, "Local OTP");
+      assert.equal(local.get(privateMessage.id), null);
+      assert.equal(local.getRaw(localMessage.id), "local raw");
+      assert.equal(local.getRaw(privateMessage.id), null);
+      assert.equal(local.count(), 1);
+
+      // Supplying a known private ID cannot turn an ID-only mutation into an
+      // unscoped operation. The private row remains available to its own scope.
+      assert.equal(local.delete(privateMessage.id), false);
+      assert.equal(privateInbox.get(privateMessage.id)?.subject, "Private secret");
+      assert.equal(privateInbox.getRaw(privateMessage.id), "private raw");
+      assert.equal(local.clear(), 1);
+      assert.equal(local.count(), 0);
+      assert.equal(privateInbox.count(), 1);
+      assert.equal(privateInbox.get(privateMessage.id)?.subject, "Private secret");
+      assert.equal(store.count(), 1);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("rejects attempted inbox assignments and always inserts into the unassigned local scope", () => {
+    const { store } = openInboxStore(":memory:");
+    try {
+      const local = store.forLocalCapture();
+      const message = {
+        type: "email" as const, source: "smtp" as const, sender: "local@example.test",
+        recipient: "dev@example.test", subject: "Local", textBody: "body", htmlBody: "",
+        rawData: "raw", detections: [], createdAt: 1_000,
+      };
+      for (const assignment of ["inboxId", "inbox_id"] as const) {
+        assert.throws(() => local.insert({ ...message, [assignment]: "private-inbox-a" } as never), /cannot specify an inbox assignment/);
+        assert.throws(() => local.insertSms({
+          ...message, type: "sms", dedupeKey: null, [assignment]: "private-inbox-a",
+        } as never), /cannot specify an inbox assignment/);
+      }
+
+      const inserted = local.insert(message);
+      assert.equal(local.get(inserted.id)?.id, inserted.id);
+      assert.equal(store.forInbox("private-inbox-a").get(inserted.id), null);
+      assert.equal(local.count(), 1);
+      assert.equal(store.count(), 1);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("expires only local rows and preserves expired private inbox rows", () => {
+    const { store } = openInboxStore(":memory:");
+    try {
+      const local = store.forLocalCapture();
+      const privateInbox = store.forInbox("private-inbox-a");
+      const old = {
+        type: "email" as const, source: "smtp" as const, sender: "sender@example.test",
+        recipient: "dev@example.test", subject: "expired", textBody: "body", htmlBody: "",
+        rawData: "raw", detections: [], createdAt: 1_000,
+      };
+      const fresh = { ...old, subject: "fresh", createdAt: 90_000_000 };
+      local.insert(old);
+      local.insert(fresh);
+      const privateExpired = privateInbox.insert({ ...old, subject: "private expired" });
+
+      assert.equal(local.pruneExpired(90_000_000, 1), 1);
+      assert.deepEqual(local.list().map(message => message.subject), ["fresh"]);
+      assert.equal(local.count(), 1);
+      assert.equal(privateInbox.get(privateExpired.id)?.subject, "private expired");
+      assert.equal(privateInbox.count(), 1);
+      assert.equal(store.count(), 2);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("prunes local rows to the maximum without pruning private rows", () => {
+    const { store } = openInboxStore(":memory:");
+    try {
+      const local = store.forLocalCapture();
+      const privateInbox = store.forInbox("private-inbox-a");
+      const row = (subject: string, createdAt: number) => ({
+        type: "email" as const, source: "smtp" as const, sender: "sender@example.test",
+        recipient: "dev@example.test", subject, textBody: "body", htmlBody: "",
+        rawData: subject, detections: [], createdAt,
+      });
+      const localIds = [local.insert(row("local-old", 1_000)), local.insert(row("local-new", 2_000))];
+      const privateRows = [privateInbox.insert(row("private-old", 1_000)), privateInbox.insert(row("private-new", 2_000))];
+
+      assert.equal(local.pruneOverMax(1), 1);
+      assert.deepEqual(local.list().map(message => message.subject), ["local-new"]);
+      assert.equal(local.get(localIds[0]!.id), null);
+      assert.equal(privateInbox.count(), 2);
+      assert.deepEqual(privateInbox.list().map(message => message.subject), ["private-new", "private-old"]);
+      assert.ok(privateInbox.get(privateRows[0]!.id));
+      assert.ok(privateInbox.get(privateRows[1]!.id));
+      assert.equal(store.count(), 3);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("deduplicates local SMS and allows the same key in a private inbox", () => {
+    const { store } = openInboxStore(":memory:");
+    try {
+      const local = store.forLocalCapture();
+      const privateInbox = store.forInbox("private-inbox-a");
+      const sms = {
+        type: "sms" as const, source: "http" as const, sender: "+14155550123",
+        recipient: "+14155550199", subject: "SMS", textBody: "Code 482913", htmlBody: "",
+        rawData: "{}", detections: [], createdAt: 1_000, dedupeKey: "same-provider-event",
+      };
+      const privateResult = privateInbox.insertSms(sms);
+      const firstLocal = local.insertSms(sms);
+      const repeatedLocal = local.insertSms(sms);
+
+      assert.equal(privateResult.duplicate, false);
+      assert.equal(firstLocal.duplicate, false);
+      if (firstLocal.duplicate) assert.fail("first local SMS insert should be new");
+      assert.equal(repeatedLocal.duplicate, true);
+      if (!repeatedLocal.duplicate) assert.fail("repeated local SMS insert should deduplicate");
+      assert.equal(repeatedLocal.id, firstLocal.message.id);
+      assert.equal(local.count(), 1);
+      assert.equal(privateInbox.count(), 1);
+      assert.equal(store.count(), 2);
+    } finally {
+      store.close();
+    }
+  });
+});
+
 describe("SMS storage", () => {
   const LEGACY_SCHEMA = `
     CREATE TABLE messages (

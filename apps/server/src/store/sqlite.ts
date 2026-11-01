@@ -33,6 +33,8 @@ export interface ScopedInboxStore {
 
 export interface InboxStore {
   forInbox(inboxId: string): ScopedInboxStore;
+  /** Local capture only: every operation is constrained to inbox_id IS NULL. */
+  forLocalCapture(): ScopedInboxStore;
   insert(message: Omit<StoredMessage, "id"> & { id?: string }): StoredMessage;
   /**
    * Insert an SMS event, deduplicating provider retries by `dedupeKey` (a
@@ -341,6 +343,57 @@ export function openInboxStore(dbPath: string, options: {requirePersistent?: boo
     "SELECT COUNT(*) AS n FROM messages WHERE inbox_id = ?",
   );
 
+  // The local capture view deliberately uses separate NULL-scoped statements.
+  // The root store is unscoped and must never back a local dashboard operation.
+  const localListStmt = database.prepare(`
+    SELECT id, type, source, sender, recipient, subject, detections, created_at,
+      CASE WHEN type = 'sms' THEN raw_data ELSE NULL END AS raw_data,
+      CASE WHEN html_body IS NOT NULL AND html_body != '' THEN 1 ELSE 0 END AS has_html,
+      CASE WHEN text_body IS NOT NULL AND text_body != '' THEN 1 ELSE 0 END AS has_text
+    FROM messages WHERE inbox_id IS NULL ORDER BY created_at DESC
+  `);
+  const localSearchStmt = database.prepare(`
+    SELECT id, type, source, sender, recipient, subject, detections, created_at,
+      CASE WHEN type = 'sms' THEN raw_data ELSE NULL END AS raw_data,
+      CASE WHEN html_body IS NOT NULL AND html_body != '' THEN 1 ELSE 0 END AS has_html,
+      CASE WHEN text_body IS NOT NULL AND text_body != '' THEN 1 ELSE 0 END AS has_text
+    FROM messages WHERE inbox_id IS NULL AND (
+      COALESCE(subject, '') LIKE ? ESCAPE '\\'
+      OR COALESCE(sender, '') LIKE ? ESCAPE '\\'
+      OR COALESCE(recipient, '') LIKE ? ESCAPE '\\'
+      OR COALESCE(text_body, '') LIKE ? ESCAPE '\\'
+    ) ORDER BY created_at DESC
+  `);
+  const localGetStmt = database.prepare(`
+    SELECT id, type, source, sender, recipient, subject, text_body, html_body,
+      detections, created_at FROM messages WHERE id = ? AND inbox_id IS NULL
+  `);
+  const localRawStmt = database.prepare(
+    "SELECT raw_data FROM messages WHERE id = ? AND inbox_id IS NULL",
+  );
+  const localDeleteStmt = database.prepare(
+    "DELETE FROM messages WHERE id = ? AND inbox_id IS NULL",
+  );
+  const localClearStmt = database.prepare("DELETE FROM messages WHERE inbox_id IS NULL");
+  const localCountStmt = database.prepare("SELECT COUNT(*) AS n FROM messages WHERE inbox_id IS NULL");
+  const localByDedupeKeyStmt = database.prepare(
+    "SELECT id FROM messages WHERE dedupe_key = ? AND inbox_id IS NULL",
+  );
+  const localPruneExpiredStmt = database.prepare(
+    "DELETE FROM messages WHERE inbox_id IS NULL AND created_at < ?",
+  );
+  const localPruneOverMaxStmt = database.prepare(`
+    DELETE FROM messages WHERE inbox_id IS NULL AND id NOT IN (
+      SELECT id FROM messages WHERE inbox_id IS NULL ORDER BY created_at DESC LIMIT ?
+    )
+  `);
+
+  function rejectInboxAssignment(message: object): void {
+    if (Object.hasOwn(message, "inboxId") || Object.hasOwn(message, "inbox_id")) {
+      throw new Error("Local capture messages cannot specify an inbox assignment");
+    }
+  }
+
   /** Insert a row (id minted here); `dedupeKey` is null outside SMS ingest. */
   function writeMessage(
     message: Omit<StoredMessage, "id"> & { id?: string },
@@ -514,6 +567,76 @@ export function openInboxStore(dbPath: string, options: {requirePersistent?: boo
             maxMessages,
           );
           return Number(result.changes);
+        },
+      };
+    },
+    forLocalCapture() {
+      return {
+        insert(message) {
+          rejectInboxAssignment(message);
+          return writeMessage(message, null);
+        },
+        insertSms(message) {
+          rejectInboxAssignment(message);
+          const { dedupeKey, ...storedMessage } = message;
+          if (dedupeKey) {
+            const existing = localByDedupeKeyStmt.get(dedupeKey) as { id: string } | undefined;
+            if (existing) return { duplicate: true, id: existing.id };
+          }
+          try {
+            return { duplicate: false, message: writeMessage(storedMessage, dedupeKey) };
+          } catch (error) {
+            if (dedupeKey && isUniqueConstraintError(error)) {
+              const existing = localByDedupeKeyStmt.get(dedupeKey) as { id: string } | undefined;
+              if (existing) return { duplicate: true, id: existing.id };
+            }
+            throw error;
+          }
+        },
+        list(query) {
+          const trimmed = query?.trim();
+          const pattern = trimmed ? `%${escapeLike(trimmed)}%` : "";
+          const rows = trimmed
+            ? localSearchStmt.all(pattern, pattern, pattern, pattern) as unknown as MessageRow[]
+            : localListStmt.all() as unknown as MessageRow[];
+          return rows.map(toSummary);
+        },
+        get(id) {
+          const row = localGetStmt.get(id) as MessageRow | undefined;
+          if (!row) return null;
+          const detail = toDetail(row);
+          if (row.type === "sms" || row.type === "webhook") {
+            const raw = localRawStmt.get(id) as { raw_data: string | null } | undefined;
+            try {
+              const parsed = JSON.parse(raw?.raw_data ?? "null");
+              if (row.type === "sms" && parsed?.sms) detail.sms = parsed.sms;
+              if (row.type === "webhook" && parsed) detail.webhook = parsed;
+            } catch {
+              /* Legacy or malformed payload. */
+            }
+          }
+          return detail;
+        },
+        getRaw(id) {
+          const row = localRawStmt.get(id) as { raw_data: string | null } | undefined;
+          return row?.raw_data ?? null;
+        },
+        delete(id) {
+          return localDeleteStmt.run(id).changes > 0;
+        },
+        clear() {
+          return Number(localClearStmt.run().changes);
+        },
+        count() {
+          return (localCountStmt.get() as { n: number }).n;
+        },
+        pruneExpired(now, retentionDays) {
+          if (!Number.isFinite(retentionDays) || retentionDays <= 0) return 0;
+          return Number(localPruneExpiredStmt.run(now - retentionDays * 86_400_000).changes);
+        },
+        pruneOverMax(maxMessages) {
+          if (!Number.isInteger(maxMessages) || maxMessages <= 0) return 0;
+          return Number(localPruneOverMaxStmt.run(maxMessages).changes);
         },
       };
     },
