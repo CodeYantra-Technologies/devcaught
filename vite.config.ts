@@ -10,6 +10,7 @@ import { nitro } from "nitro/vite";
 import { appEnvPlugin } from "./scripts/app-env-plugin.mjs";
 import { isMigrationFile } from "./scripts/migration-plan.mjs";
 import { devcaughtPlugin } from "./apps/server/src/vite-plugin.ts";
+import { devServerHost } from "./scripts/dev-server-host.mjs";
 
 /** The files `src/lib/db.ts` globs — same directory, same non-recursive scope. */
 function hasGlobbedMigrations(root: string): boolean {
@@ -50,12 +51,10 @@ function pgliteBootstrapPlugin(): Plugin {
   };
 }
 
-// `0.0.0.0:8080` is the dev-server contract — don't change host/port.
-// The dev server starts once `src/router.tsx` and `src/routes/` exist — see
-// AGENTS.md § "First scaffold".
+// Network access is an explicit opt-in for isolated live-preview development.
 export default defineConfig(({ command, isPreview }) => ({
   server: {
-    host: "0.0.0.0",
+    host: devServerHost(process.env),
     port: 8080,
     strictPort: true,
   },

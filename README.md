@@ -25,6 +25,16 @@ npm install
 npm run dev
 ```
 
+The dashboard binds to `127.0.0.1:8080` by default. To make it reachable over
+the network for live-preview development, explicitly opt in:
+
+```bash
+DEVCAUGHT_LIVE_PREVIEW=1 npm run dev
+```
+
+This binds Vite to `0.0.0.0:8080`; use it only in a trusted, isolated
+development environment. The normal startup remains loopback-only.
+
 This starts:
 
 | Service | Default |
