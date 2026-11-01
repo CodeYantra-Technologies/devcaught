@@ -81,3 +81,24 @@ test("preview hook does not register the development local API middleware", asyn
   } as never);
   assert.equal(middlewareRegistrations, 0);
 });
+
+test("CORS is disabled only for the development server, not preview or build", () => {
+  const plugin = devcaughtPlugin(async () => {});
+  const hook = plugin.config;
+  if (typeof hook !== "function") throw new Error("Expected a config hook");
+
+  const dev = hook.call({} as never, {}, {
+    command: "serve", mode: "development", isSsrBuild: false, isPreview: false,
+  });
+  assert.deepEqual(dev, { server: { cors: false } });
+
+  const preview = hook.call({} as never, {}, {
+    command: "serve", mode: "development", isSsrBuild: false, isPreview: true,
+  });
+  assert.equal(preview, undefined);
+
+  const build = hook.call({} as never, {}, {
+    command: "build", mode: "production", isSsrBuild: false, isPreview: false,
+  });
+  assert.equal(build, undefined);
+});
