@@ -31,10 +31,21 @@ export interface ScopedInboxStore {
   pruneOverMax(maxMessages: number): number;
 }
 
+export interface LocalCapturePage {
+  items: MessageSummary[];
+  hasMore: boolean;
+  nextCursor: string | null;
+}
+
+export interface LocalCaptureStore extends ScopedInboxStore {
+  /** List a bounded page of local captures, ordered newest first. */
+  listPage(options: { limit: number; cursor?: string | null; query?: string }): LocalCapturePage;
+}
+
 export interface InboxStore {
   forInbox(inboxId: string): ScopedInboxStore;
   /** Local capture only: every operation is constrained to inbox_id IS NULL. */
-  forLocalCapture(): ScopedInboxStore;
+  forLocalCapture(): LocalCaptureStore;
   insert(message: Omit<StoredMessage, "id"> & { id?: string }): StoredMessage;
   /**
    * Insert an SMS event, deduplicating provider retries by `dedupeKey` (a
@@ -137,6 +148,43 @@ function toDetail(row: MessageRow): MessageDetail {
 
 function escapeLike(value: string): string {
   return value.replace(/([%_\\])/g, "\\$1");
+}
+
+const MAX_LOCAL_PAGE_SIZE = 50;
+const MAX_LOCAL_CURSOR_LENGTH = 1_024;
+
+interface LocalPageCursor {
+  createdAt: number;
+  id: string;
+}
+
+function encodeLocalPageCursor(cursor: LocalPageCursor): string {
+  return Buffer.from(JSON.stringify([cursor.createdAt, cursor.id]), "utf8").toString("base64url");
+}
+
+function decodeLocalPageCursor(value: string | null | undefined): LocalPageCursor | null {
+  if (value == null) return null;
+  if (
+    typeof value !== "string" || value.length === 0 || value.length > MAX_LOCAL_CURSOR_LENGTH ||
+    !/^[A-Za-z0-9_-]+$/.test(value)
+  ) {
+    throw new Error("Invalid local capture pagination cursor");
+  }
+  try {
+    const decoded = Buffer.from(value, "base64url").toString("utf8");
+    if (Buffer.from(decoded, "utf8").toString("base64url") !== value) throw new Error("noncanonical cursor");
+    const parsed: unknown = JSON.parse(decoded);
+    if (
+      !Array.isArray(parsed) || parsed.length !== 2 ||
+      typeof parsed[0] !== "number" || !Number.isFinite(parsed[0]) ||
+      typeof parsed[1] !== "string" || parsed[1].length === 0 || parsed[1].length > 256
+    ) {
+      throw new Error("invalid cursor payload");
+    }
+    return { createdAt: parsed[0], id: parsed[1] };
+  } catch {
+    throw new Error("Invalid local capture pagination cursor");
+  }
 }
 
 function isUniqueConstraintError(error: unknown): boolean {
@@ -363,6 +411,32 @@ export function openInboxStore(dbPath: string, options: {requirePersistent?: boo
       OR COALESCE(recipient, '') LIKE ? ESCAPE '\\'
       OR COALESCE(text_body, '') LIKE ? ESCAPE '\\'
     ) ORDER BY created_at DESC
+  `);
+  const localPageStmt = database.prepare(`
+    SELECT id, type, source, sender, recipient, subject, detections, created_at,
+      CASE WHEN html_body IS NOT NULL AND html_body != '' THEN 1 ELSE 0 END AS has_html,
+      CASE WHEN text_body IS NOT NULL AND text_body != '' THEN 1 ELSE 0 END AS has_text
+    FROM messages
+    WHERE inbox_id IS NULL
+      AND (? IS NULL OR created_at < ? OR (created_at = ? AND id < ?))
+    ORDER BY created_at DESC, id DESC
+    LIMIT ?
+  `);
+  const localSearchPageStmt = database.prepare(`
+    SELECT id, type, source, sender, recipient, subject, detections, created_at,
+      CASE WHEN html_body IS NOT NULL AND html_body != '' THEN 1 ELSE 0 END AS has_html,
+      CASE WHEN text_body IS NOT NULL AND text_body != '' THEN 1 ELSE 0 END AS has_text
+    FROM messages
+    WHERE inbox_id IS NULL
+      AND (
+        COALESCE(subject, '') LIKE ? ESCAPE '\\'
+        OR COALESCE(sender, '') LIKE ? ESCAPE '\\'
+        OR COALESCE(recipient, '') LIKE ? ESCAPE '\\'
+        OR COALESCE(text_body, '') LIKE ? ESCAPE '\\'
+      )
+      AND (? IS NULL OR created_at < ? OR (created_at = ? AND id < ?))
+    ORDER BY created_at DESC, id DESC
+    LIMIT ?
   `);
   const localGetStmt = database.prepare(`
     SELECT id, type, source, sender, recipient, subject, text_body, html_body,
@@ -600,6 +674,36 @@ export function openInboxStore(dbPath: string, options: {requirePersistent?: boo
             ? localSearchStmt.all(pattern, pattern, pattern, pattern) as unknown as MessageRow[]
             : localListStmt.all() as unknown as MessageRow[];
           return rows.map(toSummary);
+        },
+        listPage({ limit, cursor, query }) {
+          if (!Number.isInteger(limit) || limit <= 0) {
+            throw new Error("Local capture page size must be a positive integer");
+          }
+          const pageLimit = Math.min(limit, MAX_LOCAL_PAGE_SIZE);
+          const decodedCursor = decodeLocalPageCursor(cursor);
+          const trimmed = query?.trim();
+          const pattern = trimmed ? `%${escapeLike(trimmed)}%` : "";
+          const cursorAt = decodedCursor?.createdAt ?? null;
+          const cursorId = decodedCursor?.id ?? null;
+          const rows = (trimmed
+            ? localSearchPageStmt.all(
+                pattern, pattern, pattern, pattern,
+                cursorAt, cursorAt, cursorAt, cursorId, pageLimit + 1,
+              )
+            : localPageStmt.all(
+                cursorAt, cursorAt, cursorAt, cursorId, pageLimit + 1,
+              )) as unknown as MessageRow[];
+          const hasMore = rows.length > pageLimit;
+          const pageRows = hasMore ? rows.slice(0, pageLimit) : rows;
+          const items = pageRows.map(toSummary);
+          const last = pageRows.at(-1);
+          return {
+            items,
+            hasMore,
+            nextCursor: hasMore && last
+              ? encodeLocalPageCursor({ createdAt: last.created_at, id: last.id })
+              : null,
+          };
         },
         get(id) {
           const row = localGetStmt.get(id) as MessageRow | undefined;

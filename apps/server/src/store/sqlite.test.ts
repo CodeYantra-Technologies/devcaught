@@ -63,6 +63,93 @@ describe("InboxStore", () => {
 });
 
 describe("local capture storage view", () => {
+  it("returns bounded deterministic local pages with validated cursors and summary-only data", () => {
+    const { store } = openInboxStore(":memory:");
+    try {
+      const local = store.forLocalCapture();
+      const privateInbox = store.forInbox("private-inbox-a");
+      const row = (id: string, createdAt: number, subject: string, type: "email" | "sms" = "email") => ({
+        id,
+        type,
+        source: "smtp" as const,
+        sender: "sender@example.test",
+        recipient: "dev@example.test",
+        subject,
+        textBody: "body 482913",
+        htmlBody: "<b>private html body</b>",
+        rawData: JSON.stringify({ sms: { provider: "twilio", from: "+15550000000", body: "provider secret" }, request: { token: "provider secret" } }),
+        detections: [],
+        createdAt,
+      });
+
+      const inserted = [
+        local.insert(row("a", 5_000, "newest")),
+        local.insert(row("c", 4_000, "tie-later-id", "sms")),
+        local.insert(row("b", 4_000, "tie-earlier-id")),
+        local.insert(row("d", 3_000, "oldest")),
+      ];
+      const privateRow = privateInbox.insert(row("private", 9_000, "private only"));
+
+      const empty = local.listPage({ limit: 10, query: "does not exist" });
+      assert.deepEqual(empty, { items: [], hasMore: false, nextCursor: null });
+
+      const first = local.listPage({ limit: 2 });
+      assert.deepEqual(first.items.map(item => item.id), ["a", "c"]);
+      assert.equal(first.hasMore, true);
+      assert.ok(first.nextCursor);
+      assert.ok(!JSON.stringify(first).includes("private only"));
+      assert.ok(!JSON.stringify(first).includes("provider secret"));
+      assert.ok(!JSON.stringify(first).includes("private html body"));
+      assert.ok(!JSON.stringify(first).includes("rawData"));
+      assert.equal(first.items[1]?.sms, undefined);
+
+      const second = local.listPage({ limit: 2, cursor: first.nextCursor });
+      assert.deepEqual(second.items.map(item => item.id), ["b", "d"]);
+      assert.equal(second.hasMore, false);
+      assert.equal(second.nextCursor, null);
+      assert.deepEqual([...first.items, ...second.items].map(item => item.id), ["a", "c", "b", "d"]);
+      assert.equal(new Set([...first.items, ...second.items].map(item => item.id)).size, 4);
+      assert.ok(privateInbox.get(privateRow.id));
+
+      // Existing list semantics stay complete and unpaginated; page cursors
+      // do not change what the established list API returns.
+      assert.equal(local.list().length, 4);
+      assert.ok(!local.list().some(item => item.id === privateRow.id));
+      assert.equal(store.list().length, 5);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("rejects invalid local page sizes and cursors, and caps pages at 50", () => {
+    const { store } = openInboxStore(":memory:");
+    try {
+      const local = store.forLocalCapture();
+      const row = (id: string) => ({
+        id, type: "email" as const, source: "smtp" as const, sender: "", recipient: "",
+        subject: id, textBody: "", htmlBody: "", rawData: "", detections: [], createdAt: 1,
+      });
+      for (let i = 0; i < 51; i++) local.insert(row(`message-${String(i).padStart(2, "0")}`));
+
+      for (const limit of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY] as number[]) {
+        assert.throws(() => local.listPage({ limit }), /positive integer/);
+      }
+      for (const cursor of ["", "not-base64!", "e30", "WyJub3QtYS10aW1lc3RhbXAiLCJpZCJd", "A".repeat(1_025)]) {
+        assert.throws(() => local.listPage({ limit: 5, cursor }), /pagination cursor/);
+      }
+
+      const page = local.listPage({ limit: 500 });
+      assert.equal(page.items.length, 50);
+      assert.equal(page.hasMore, true);
+      assert.ok(page.nextCursor);
+      const last = local.listPage({ limit: 50, cursor: page.nextCursor });
+      assert.equal(last.items.length, 1);
+      assert.equal(last.hasMore, false);
+    } finally {
+      store.close();
+    }
+  });
+
   it("isolates every local read and mutation from private inbox rows in the same database", () => {
     const { store } = openInboxStore(":memory:");
     try {
