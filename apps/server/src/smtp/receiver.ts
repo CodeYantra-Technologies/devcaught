@@ -237,6 +237,9 @@ export async function startSmtpReceiver(
       );
     },
   });
+  server.on("close", () => { status.running = false; });
+  let listenerStarted = false;
+  let closePromise: Promise<void> | undefined;
 
   try {
     await new Promise<void>((resolve, reject) => {
@@ -254,6 +257,7 @@ export async function startSmtpReceiver(
     if (address && typeof address === "object") {
       status.port = address.port;
     }
+    listenerStarted = true;
     status.running = true;
     console.log(`[DevCaught] SMTP listening on ${status.host}:${status.port}`);
   } catch (error) {
@@ -269,9 +273,41 @@ export async function startSmtpReceiver(
   return {
     status,
     close() {
-      return new Promise((resolve) => {
-        server.close(() => resolve());
+      // Readiness is revoked synchronously, even while SMTPServer is draining
+      // existing sessions. Repeated callers share its library-managed shutdown.
+      status.running = false;
+      if (closePromise) return closePromise;
+      if (!listenerStarted) {
+        closePromise = Promise.resolve();
+        return closePromise;
+      }
+
+      closePromise = new Promise<void>((resolve, reject) => {
+        let settled = false;
+        let closeError: Error | undefined;
+        const onError = (error: Error) => { closeError ??= error; };
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          server.off("error", onError);
+          if (closeError) reject(closeError);
+          else resolve();
+        };
+
+        server.on("error", onError);
+        try {
+          // smtp-server closes pending sockets and invokes this callback after
+          // its graceful-drain timeout; its callback does not expose net errors.
+          server.close(finish);
+        } catch (error) {
+          if (!settled) {
+            settled = true;
+            server.off("error", onError);
+            reject(error);
+          }
+        }
       });
+      return closePromise;
     },
   };
 }

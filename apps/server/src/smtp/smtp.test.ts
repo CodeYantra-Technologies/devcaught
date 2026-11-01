@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { connect, type Socket } from "node:net";
+import { connect, createServer, type Socket } from "node:net";
 import { PassThrough } from "node:stream";
 import { describe, it, type TestContext } from "node:test";
 import { SMTPServer, type SMTPServerSession, type SMTPServerDataStream } from "smtp-server";
@@ -225,6 +225,116 @@ describe("SMTP receiver", { timeout: 15_000 }, () => {
     await client.envelope();
     await client.data(552, "x".repeat(60_000));
     await recovery(client, store);
+  });
+});
+
+describe("SMTP listener lifecycle", { timeout: 5_000 }, () => {
+  it("revokes readiness immediately and shares sequential and concurrent close calls", async t => {
+    const { store } = openInboxStore(":memory:");
+    const smtp = await startSmtpReceiver({
+      host: "127.0.0.1", smtpPort: 0, httpPort: 0, dbPath: ":memory:",
+      smtpSizeLimit: 4096, retentionDays: 0, maxMessages: 0, smtpRoutingMode: "local",
+    }, new InboxService(store.forLocalCapture()));
+    t.after(async () => { await smtp.close(); store.close(); });
+
+    assert.equal(smtp.status.running, true);
+    const firstClose = smtp.close();
+    assert.equal(smtp.status.running, false, "readiness changes before asynchronous socket shutdown");
+    const concurrentClose = smtp.close();
+    assert.strictEqual(concurrentClose, firstClose, "concurrent calls share the shutdown promise");
+    await Promise.all([firstClose, concurrentClose]);
+    assert.equal(smtp.status.running, false);
+    await smtp.close();
+    assert.equal(smtp.status.running, false, "a completed close remains stopped");
+  });
+
+  it("closes safely after bind failure without calling SMTPServer.close", async t => {
+    const occupied = createServer();
+    await new Promise<void>((resolve, reject) => {
+      occupied.once("error", reject);
+      occupied.listen(0, "127.0.0.1", () => {
+        occupied.off("error", reject);
+        resolve();
+      });
+    });
+    const address = occupied.address();
+    assert.ok(address && typeof address !== "string");
+    const { store } = openInboxStore(":memory:");
+    const close = t.mock.method(SMTPServer.prototype, "close", function() {
+      assert.fail("failed listener startup must not invoke SMTPServer.close");
+    });
+    try {
+      const smtp = await startSmtpReceiver({
+        host: "127.0.0.1", smtpPort: address.port, httpPort: 0, dbPath: ":memory:",
+        smtpSizeLimit: 4096, retentionDays: 0, maxMessages: 0, smtpRoutingMode: "local",
+      }, new InboxService(store.forLocalCapture()));
+      assert.equal(smtp.status.running, false);
+      await smtp.close();
+      await smtp.close();
+      assert.equal(close.mock.callCount(), 0);
+    } finally {
+      close.mock.restore();
+      store.close();
+      await new Promise<void>(resolve => occupied.close(() => resolve()));
+    }
+  });
+
+  it("surfaces SMTPServer shutdown errors to every close caller", async t => {
+    const { store } = openInboxStore(":memory:");
+    const listen = t.mock.method(SMTPServer.prototype, "listen", function(this: SMTPServer, ...args: unknown[]) {
+      queueMicrotask(args.at(-1) as () => void);
+      return this.server;
+    });
+    const close = t.mock.method(SMTPServer.prototype, "close", function(
+      this: SMTPServer,
+      callback?: (() => void) | null,
+    ) {
+      queueMicrotask(() => {
+        this.emit("error", new Error("synthetic SMTP close failure"));
+        callback?.();
+      });
+    });
+    try {
+      const smtp = await startSmtpReceiver({
+        host: "127.0.0.1", smtpPort: 0, httpPort: 0, dbPath: ":memory:",
+        smtpSizeLimit: 4096, retentionDays: 0, maxMessages: 0, smtpRoutingMode: "local",
+      }, new InboxService(store.forLocalCapture()));
+      assert.equal(smtp.status.running, true);
+      const firstClose = smtp.close();
+      assert.equal(smtp.status.running, false);
+      await assert.rejects(firstClose, /synthetic SMTP close failure/);
+      await assert.rejects(smtp.close(), /synthetic SMTP close failure/);
+      assert.equal(listen.mock.callCount(), 1);
+      assert.equal(close.mock.callCount(), 1);
+    } finally {
+      listen.mock.restore();
+      close.mock.restore();
+      store.close();
+    }
+  });
+
+  it("rejects a synchronous SMTPServer.close exception", async t => {
+    const { store } = openInboxStore(":memory:");
+    const listen = t.mock.method(SMTPServer.prototype, "listen", function(this: SMTPServer, ...args: unknown[]) {
+      queueMicrotask(args.at(-1) as () => void);
+      return this.server;
+    });
+    const close = t.mock.method(SMTPServer.prototype, "close", function() {
+      throw new Error("synthetic synchronous close failure");
+    });
+    try {
+      const smtp = await startSmtpReceiver({
+        host: "127.0.0.1", smtpPort: 0, httpPort: 0, dbPath: ":memory:",
+        smtpSizeLimit: 4096, retentionDays: 0, maxMessages: 0, smtpRoutingMode: "local",
+      }, new InboxService(store.forLocalCapture()));
+      await assert.rejects(smtp.close(), /synthetic synchronous close failure/);
+      assert.equal(smtp.status.running, false);
+      assert.equal(close.mock.callCount(), 1);
+    } finally {
+      listen.mock.restore();
+      close.mock.restore();
+      store.close();
+    }
   });
 });
 
