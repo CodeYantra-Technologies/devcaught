@@ -62,13 +62,17 @@ async function startRuntime(): Promise<DevCaughtRuntime> {
     // Any private ingestion disables root/global retention. Scoped services may
     // prune their own inbox; root email/webhook activity must never prune SMS.
     const privateIngestion = config.smtpRoutingMode === 'private' || config.smsRoutingMode === 'private';
-    if (!privateIngestion) {
+    const retention = {retentionDays: config.retentionDays, maxMessages: config.maxMessages};
+    const localSmtpInbox = config.smtpRoutingMode === 'local'
+      ? new InboxService(store.forLocalCapture(), retention)
+      : undefined;
+    if (localSmtpInbox) {
+      localSmtpInbox.prune();
+    } else if (!privateIngestion) {
       store.pruneExpired(Date.now(), config.retentionDays);
       store.pruneOverMax(config.maxMessages);
     }
-    const inbox = new InboxService(store, privateIngestion ? {} : {
-      retentionDays: config.retentionDays, maxMessages: config.maxMessages,
-    });
+    const inbox = new InboxService(store, privateIngestion ? {} : retention);
     let smtp: SmtpRuntime;
     if (config.smtpRoutingMode === 'private') {
       const { configuredPrivateSmtpDependencies } = await import('./smtp/private-routing.ts');
@@ -79,7 +83,7 @@ async function startRuntime(): Promise<DevCaughtRuntime> {
         if (!receiver.status.running) await routing.close();
       } catch (error) { await routing.close(); throw error; }
     } else {
-      smtp = await startSmtpReceiver(config, inbox);
+      smtp = await startSmtpReceiver(config, localSmtpInbox ?? inbox);
     }
     if (smsRouting) {
       const receiver = smtp, sms = smsRouting;
