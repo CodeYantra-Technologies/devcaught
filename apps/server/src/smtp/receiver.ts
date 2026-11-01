@@ -1,7 +1,7 @@
 import { SMTPServer } from "smtp-server";
 import { simpleParser } from "mailparser";
 import type { ListenerStatus } from "../../../../packages/shared/src/types.ts";
-import type { DevCaughtConfig } from "../config.ts";
+import { isNumericLoopbackHost, type DevCaughtConfig } from "../config.ts";
 import { portInUseMessage } from "../config.ts";
 import type { InboxService } from "../ingest/inboxService.ts";
 import { normalizeParsedMail } from "../ingest/normalizeEmail.ts";
@@ -117,10 +117,16 @@ export function collectRaw(stream: NodeJS.ReadableStream, limit: number, control
 
 export async function startSmtpReceiver(
   config: DevCaughtConfig,
-  _inbox: InboxService,
+  inbox: InboxService,
   resolveRecipient?: SmtpRecipientResolver,
   inboxForId?: SmtpInboxFactory,
 ): Promise<SmtpRuntime> {
+  // Defense in depth: configuration also validates this, but callers can build
+  // DevCaughtConfig directly in tests or embedding applications.
+  if (config.smtpRoutingMode === "local" && !isNumericLoopbackHost(config.host)) {
+    throw new Error("Local SMTP capture requires a numeric loopback bind address");
+  }
+  const localCapture = config.smtpRoutingMode === "local";
   const status: ListenerStatus = {
     running: false,
     host: config.host,
@@ -149,6 +155,12 @@ export async function startSmtpReceiver(
       const controller = new AbortController();
       active.set(session, () => controller.abort());
       const validate = async () => {
+        if (localCapture) {
+          const mapping = accepted.get(envelope) ?? new Map<string, string>();
+          mapping.set(address.address, "__local_capture__");
+          accepted.set(envelope, mapping);
+          return;
+        }
         if (!resolveRecipient) throw temporaryFailure();
         const id = await lookup(resolveRecipient, address.address, controller.signal);
         if (controller.signal.aborted) throw temporaryFailure();
@@ -177,15 +189,21 @@ export async function startSmtpReceiver(
         let validationError: Error | undefined;
         let verifiedInboxId: string | undefined;
         try {
-          if (!resolveRecipient || !mapping || recipients.length === 0) throw temporaryFailure();
-          const ids = await Promise.all(recipients.map(address =>
-            lookup(resolveRecipient, address, controller.signal),
-          ));
-          if (ids.some(id => !id)) throw smtpError(550, "Recipient not registered");
-          if (ids.some((id, index) => id !== mapping.get(recipients[index]!))) throw temporaryFailure();
-          if (new Set(ids).size !== 1) throw smtpError(550, "Multiple inbox delivery rejected");
-          verifiedInboxId = ids[0]!;
-          if (!inboxForId) throw temporaryFailure();
+          if (localCapture) {
+            if (!mapping || recipients.length === 0 || recipients.some(address => mapping.get(address) !== "__local_capture__")) {
+              throw temporaryFailure();
+            }
+          } else {
+            if (!resolveRecipient || !mapping || recipients.length === 0) throw temporaryFailure();
+            const ids = await Promise.all(recipients.map(address =>
+              lookup(resolveRecipient, address, controller.signal),
+            ));
+            if (ids.some(id => !id)) throw smtpError(550, "Recipient not registered");
+            if (ids.some((id, index) => id !== mapping.get(recipients[index]!))) throw temporaryFailure();
+            if (new Set(ids).size !== 1) throw smtpError(550, "Multiple inbox delivery rejected");
+            verifiedInboxId = ids[0]!;
+            if (!inboxForId) throw temporaryFailure();
+          }
         } catch (error) {
           validationError = error instanceof Error ? error : temporaryFailure();
           collected.discard();
@@ -194,6 +212,13 @@ export async function startSmtpReceiver(
         const { raw, error } = await collected.promise;
         if (validationError) throw validationError;
         if (error) throw error;
+        if (localCapture) {
+          try {
+            const parsed = await simpleParser(raw);
+            inbox.ingest(normalizeParsedMail(parsed, raw.toString("utf8"), "smtp"));
+          } catch { throw temporaryFailure(); }
+          return;
+        }
         if (!verifiedInboxId || !inboxForId) throw temporaryFailure();
         try {
           const parsed = await simpleParser(raw);

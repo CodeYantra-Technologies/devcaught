@@ -76,12 +76,14 @@ async function fixture(t: TestContext, options: {
   resolve?: SmtpRecipientResolver | null;
   factory?: SmtpInboxFactory | null;
   limit?: number;
+  routing?: "local" | "private";
 } = {}) {
   const { store } = openInboxStore(":memory:");
   const sockets: Socket[] = [];
   const smtp = await startSmtpReceiver({
     host: "127.0.0.1", smtpPort: 0, httpPort: 0, dbPath: ":memory:",
     smtpSizeLimit: options.limit ?? 4096, retentionDays: 0, maxMessages: 0,
+    ...(options.routing ? {smtpRoutingMode: options.routing} : {}),
   }, new InboxService(store.forInbox("inbox-a")),
   options.resolve === null ? undefined : options.resolve ?? resolver,
   options.factory === null ? undefined : options.factory ?? (id => new InboxService(store.forInbox(id))));
@@ -119,6 +121,14 @@ describe("SMTP receiver", { timeout: 15_000 }, () => {
     assert.equal(messages[0]?.detections[0]?.value, "482913");
     assert.ok(!("rawData" in messages[0]!));
     assert.match(store.forInbox("inbox-b").getRaw(messages[0]!.id)!, /482913/);
+  });
+
+  it("captures arbitrary recipients on loopback into the local SQLite inbox", async t => {
+    const { client, store } = await fixture(t, {routing: "local", resolve: null});
+    await client.envelope(["arbitrary-recipient@example.test"]);
+    await client.data();
+    assert.equal(store.count(), 1);
+    assert.equal(store.forInbox("inbox-a").count(), 1);
   });
 
   it("delivers multiple recipients assigned to one inbox exactly once", async t => {
@@ -282,8 +292,8 @@ describe("bounded SMTP DATA collector", { timeout: 2_000 }, () => {
 
 // Exercise the actual hooks without sockets as well. Only accepted RCPTs are
 // added to the envelope, matching SMTPServer's protocol lifecycle.
-async function handlers(t: TestContext, resolve: SmtpRecipientResolver = resolver,
-  factory?: SmtpInboxFactory | null) {
+async function handlers(t: TestContext, resolve: SmtpRecipientResolver | null = resolver,
+  factory?: SmtpInboxFactory | null, host = "127.0.0.1", routing?: "local" | "private") {
   const { store } = openInboxStore(":memory:");
   t.after(() => store.close());
   let server!: SMTPServer;
@@ -294,9 +304,10 @@ async function handlers(t: TestContext, resolve: SmtpRecipientResolver = resolve
   });
   try {
     await startSmtpReceiver({
-      host: "127.0.0.1", smtpPort: 0, httpPort: 0, dbPath: ":memory:",
+      host, smtpPort: 0, httpPort: 0, dbPath: ":memory:",
       smtpSizeLimit: 4096, retentionDays: 0, maxMessages: 0,
-    }, new InboxService(store.forInbox("inbox-a")), resolve,
+      ...(routing ? {smtpRoutingMode: routing} : {}),
+    }, new InboxService(store.forInbox("inbox-a")), resolve ?? undefined,
     factory === null ? undefined : factory ?? (id => new InboxService(store.forInbox(id))));
   } finally { listen.mock.restore(); }
   const session = { envelope: { mailFrom: { address: "sender@example.test", args: {} }, rcptTo: [] } } as unknown as SMTPServerSession;
@@ -396,5 +407,22 @@ describe("SMTP hooks without network listeners", { timeout: 2_000 }, () => {
     await h.rcpt();
     assert.equal(responseCode(await h.data().result), 451);
     assert.equal(h.store.count(), 0);
+  });
+
+  it("does not enable local capture on wildcard or non-loopback binds", async t => {
+    for (const host of ["0.0.0.0", "192.0.2.10"]) {
+      const {store} = openInboxStore(":memory:");
+      const listen = t.mock.method(SMTPServer.prototype, "listen", function() {
+        assert.fail("invalid local capture must fail before SMTP listener startup");
+      });
+      await assert.rejects(startSmtpReceiver({
+        host, smtpPort: 0, httpPort: 0, dbPath: ":memory:",
+        smtpSizeLimit: 4096, retentionDays: 0, maxMessages: 0, smtpRoutingMode: "local",
+      }, new InboxService(store.forInbox("inbox-a"))), /numeric loopback bind address/);
+      assert.equal(listen.mock.callCount(), 0);
+      assert.equal(store.count(), 0);
+      listen.mock.restore();
+      store.close();
+    }
   });
 });

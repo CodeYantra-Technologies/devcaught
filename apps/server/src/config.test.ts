@@ -3,6 +3,7 @@ import { afterEach, describe, it } from "node:test";
 import {
   assertSupportedNode,
   isSupportedNode,
+  isNumericLoopbackHost,
   loadConfig,
   portInUseMessage,
 } from "./config.ts";
@@ -26,6 +27,41 @@ describe("portInUseMessage", () => {
     const message = portInUseMessage("SMTP", "127.0.0.1", 1025, "DEVCAUGHT_SMTP_PORT");
     assert.match(message, /SMTP server on 127.0.0.1:1025/);
     assert.match(message, /DEVCAUGHT_SMTP_PORT=1026 npm run dev/);
+  });
+});
+
+describe("SMTP routing mode", () => {
+  afterEach(() => {
+    delete process.env.DEVCAUGHT_SMTP_ROUTING_MODE;
+    delete process.env.DEVCAUGHT_HOST;
+  });
+
+  it("defaults to local capture only on numeric loopback", () => {
+    assert.equal(loadConfig().smtpRoutingMode, "local");
+    process.env.DEVCAUGHT_HOST = "0.0.0.0";
+    assert.equal(loadConfig().smtpRoutingMode, undefined);
+    process.env.DEVCAUGHT_HOST = "192.0.2.10";
+    assert.equal(loadConfig().smtpRoutingMode, undefined);
+  });
+
+  it("accepts strict numeric loopback literals and rejects ambiguous IP forms", () => {
+    for (const host of ["127.0.0.1", "127.255.255.255", "::1"]) {
+      assert.equal(isNumericLoopbackHost(host), true, host);
+    }
+    for (const host of ["0.0.0.0", "127.1", "2130706433", "127.000.0.1", "127.0.0.999", "localhost", "[::1]", "::ffff:127.0.0.1"]) {
+      assert.equal(isNumericLoopbackHost(host), false, host);
+    }
+  });
+
+  it("rejects explicit local capture on a network bind and preserves private mode", () => {
+    process.env.DEVCAUGHT_SMTP_ROUTING_MODE = "local";
+    for (const host of ["0.0.0.0", "localhost", "127.1", "2130706433", "127.000.0.1", "[::1]"]) {
+      process.env.DEVCAUGHT_HOST = host;
+      assert.throws(() => loadConfig(), /numeric loopback/, host);
+    }
+    process.env.DEVCAUGHT_SMTP_ROUTING_MODE = "private";
+    process.env.DEVCAUGHT_HOST = "0.0.0.0";
+    assert.equal(loadConfig().smtpRoutingMode, "private");
   });
 });
 

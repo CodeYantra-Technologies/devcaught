@@ -1,4 +1,5 @@
 import path from "node:path";
+import { isIP } from "node:net";
 import {
   DEFAULT_DB_PATH,
   DEFAULT_HOST,
@@ -9,8 +10,8 @@ import {
 } from "../../../packages/shared/src/constants.ts";
 
 export interface DevCaughtConfig {
-  /** Explicit opt-in only; unset retains the existing SMTP behavior. */
-  smtpRoutingMode?: 'private';
+  /** Local capture accepts arbitrary recipients only on a numeric loopback bind. */
+  smtpRoutingMode?: 'local' | 'private';
   smsRoutingMode?: 'private';
   twilioAccountSid?: string;
   host: string;
@@ -26,6 +27,15 @@ export interface DevCaughtConfig {
   twilioAuthToken?: string;
   /** Optional Twilio public callback URL (absolute HTTPS, no credentials, no fragment). */
   twilioPublicUrl?: string;
+}
+
+/** Accept only canonical numeric loopback literals supported by Node's bind API. */
+export function isNumericLoopbackHost(host: string): boolean {
+  const family = isIP(host);
+  if (family === 4) return Number(host.split(".")[0]) === 127;
+  // Keep IPv6 capture deliberately narrow: no zone IDs, mapped addresses,
+  // hostnames, or alternate spellings that could be interpreted differently.
+  return family === 6 && host.toLowerCase() === "::1";
 }
 
 function readPort(name: string, fallback: number): number {
@@ -103,14 +113,18 @@ export function assertSupportedNode(version = process.versions.node): void {
 
 export function loadConfig(cwd = process.cwd()): DevCaughtConfig {
   const smtpRouting = process.env.DEVCAUGHT_SMTP_ROUTING_MODE;
-  if (smtpRouting !== undefined && smtpRouting !== '' && smtpRouting !== 'private') {
-    throw new Error('DEVCAUGHT_SMTP_ROUTING_MODE must be unset or private');
+  if (smtpRouting !== undefined && smtpRouting !== '' && smtpRouting !== 'private' && smtpRouting !== 'local') {
+    throw new Error('DEVCAUGHT_SMTP_ROUTING_MODE must be unset, local or private');
   }
   const smsRouting = process.env.DEVCAUGHT_SMS_ROUTING_MODE;
   if (smsRouting !== undefined && smsRouting !== '' && smsRouting !== 'private') {
     throw new Error('DEVCAUGHT_SMS_ROUTING_MODE must be unset or private');
   }
   const host = process.env.DEVCAUGHT_HOST?.trim() || DEFAULT_HOST;
+  const loopback = isNumericLoopbackHost(host);
+  if (smtpRouting === 'local' && !loopback) {
+    throw new Error('Local SMTP capture requires DEVCAUGHT_HOST to be a numeric loopback address');
+  }
   const dbPathRaw = process.env.DEVCAUGHT_DB_PATH?.trim() || DEFAULT_DB_PATH;
   if (smsRouting === 'private' && dbPathRaw === ':memory:') {
     throw new Error('Private SMS requires persistent SQLite storage');
@@ -124,7 +138,8 @@ export function loadConfig(cwd = process.cwd()): DevCaughtConfig {
     throw new Error('Private SMS requires a Twilio account, token and HTTPS callback URL');
   }
   return {
-    ...(smtpRouting === 'private' ? {smtpRoutingMode: 'private' as const} : {}),
+    ...(smtpRouting === 'private' ? {smtpRoutingMode: 'private' as const} :
+      smtpRouting === 'local' || (!smtpRouting && loopback) ? {smtpRoutingMode: 'local' as const} : {}),
     ...(smsRouting === 'private' ? {smsRoutingMode: 'private' as const, twilioAccountSid} : {}),
     host,
     smtpPort: readPort("DEVCAUGHT_SMTP_PORT", DEFAULT_SMTP_PORT),

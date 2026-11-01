@@ -33,6 +33,10 @@ This starts:
 | SMTP receiver | `127.0.0.1:1025` |
 | HTTP API | `127.0.0.1:8025` |
 
+The default numeric loopback bind enables **local SMTP capture**. It accepts any
+envelope recipient and stores mail in the local SQLite inbox; recipients do not
+need private routing registrations. Use this only for local development.
+
 Configure your local app to send development email to DevCaught:
 
 ```text
@@ -151,7 +155,18 @@ SMTP_PORT=1025
 SMTP_SECURE=false
 ```
 
-No username, password, or TLS. Bind is loopback-only by default so this is not an internet mail server.
+No username, password, or TLS. The SMTP capture listener is unauthenticated and
+must stay on numeric loopback (`127.0.0.1` or `::1`). Do not set
+`DEVCAUGHT_HOST=0.0.0.0` or another network address for local capture: that
+disables capture by default, and explicitly selecting
+`DEVCAUGHT_SMTP_ROUTING_MODE=local` on such a bind is rejected. Docker's
+network-accessible `DEVCAUGHT_HOST=0.0.0.0` configuration therefore cannot use
+the local capture policy.
+
+Private SMTP routing is a separate mode (`DEVCAUGHT_SMTP_ROUTING_MODE=private`).
+It verifies registered recipients repeatedly and stores only through the
+verified inbox scope. Network deployments must use this private mode; the local
+capture policy is not available to them.
 
 ### Example: Node.js / Nodemailer
 

@@ -56,7 +56,7 @@ test('explicit private opt-in is strict; absent mode leaves configuration unchan
   const previous=process.env.DEVCAUGHT_SMTP_ROUTING_MODE;
   try {
     delete process.env.DEVCAUGHT_SMTP_ROUTING_MODE;
-    assert.equal(loadConfig().smtpRoutingMode,undefined);
+    assert.equal(loadConfig().smtpRoutingMode,'local');
     process.env.DEVCAUGHT_SMTP_ROUTING_MODE='private'; assert.equal(loadConfig().smtpRoutingMode,'private');
     process.env.DEVCAUGHT_SMTP_ROUTING_MODE='typo'; assert.throws(() => loadConfig());
   } finally {if(previous===undefined) delete process.env.DEVCAUGHT_SMTP_ROUTING_MODE; else process.env.DEVCAUGHT_SMTP_ROUTING_MODE=previous;}
