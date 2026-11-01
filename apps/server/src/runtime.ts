@@ -64,7 +64,7 @@ async function startRuntime(): Promise<DevCaughtRuntime> {
     const privateIngestion = config.smtpRoutingMode === 'private' || config.smsRoutingMode === 'private';
     const retention = {retentionDays: config.retentionDays, maxMessages: config.maxMessages};
     const localSmtpInbox = config.smtpRoutingMode === 'local'
-      ? new InboxService(store.forLocalCapture(), retention)
+      ? new InboxService(store.forLocalSmtpCapture(), retention)
       : undefined;
     if (localSmtpInbox) {
       localSmtpInbox.prune();
@@ -72,7 +72,11 @@ async function startRuntime(): Promise<DevCaughtRuntime> {
       store.pruneExpired(Date.now(), config.retentionDays);
       store.pruneOverMax(config.maxMessages);
     }
-    const inbox = new InboxService(store, privateIngestion ? {} : retention);
+    // Local SMTP retention belongs only to the provenance-scoped SMTP service.
+    // Root webhook/SMS/test-email ingestion deliberately has no automatic
+    // pruning in this mode, so it cannot evict trusted SMTP or private rows.
+    const rootRetentionDisabled = privateIngestion || config.smtpRoutingMode === 'local';
+    const inbox = new InboxService(store, rootRetentionDisabled ? {} : retention);
     let smtp: SmtpRuntime;
     if (config.smtpRoutingMode === 'private') {
       const { configuredPrivateSmtpDependencies } = await import('./smtp/private-routing.ts');

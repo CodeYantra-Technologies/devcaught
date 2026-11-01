@@ -10,7 +10,13 @@ CREATE TABLE IF NOT EXISTS messages (
   html_body TEXT,
   raw_data TEXT,
   detections TEXT NOT NULL DEFAULT '[]',
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  inbox_id TEXT,
+  capture_origin TEXT CHECK (
+    capture_origin IS NULL OR (
+      capture_origin = 'local_smtp' AND type = 'email' AND source = 'smtp' AND inbox_id IS NULL
+    )
+  )
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at DESC);
@@ -31,4 +37,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_dedupe_key
 CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_inbox_dedupe_key
   ON messages(inbox_id, dedupe_key)
   WHERE dedupe_key IS NOT NULL AND inbox_id IS NOT NULL;
+`;
+
+/** Nullable provenance marker for trusted local SMTP captures. */
+export const MIGRATION_LOCAL_SMTP_PROVENANCE = `
+ALTER TABLE messages ADD COLUMN capture_origin TEXT
+  CHECK (
+    capture_origin IS NULL OR (
+      capture_origin = 'local_smtp' AND type = 'email' AND source = 'smtp' AND inbox_id IS NULL
+    )
+  );
 `;

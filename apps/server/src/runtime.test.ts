@@ -81,7 +81,7 @@ test("local runtime routes SMTP and startup retention through the local capture 
 
   const { store: seedStore } = openInboxStore(dbPath);
   seedStoreForCleanup = seedStore;
-  seedStore.forLocalCapture().insert(row("expired local capture", 1));
+  seedStore.forLocalSmtpCapture().insert(row("expired local SMTP capture", 1));
   const privateInbox = seedStore.forInbox("private-inbox-a");
   const privateMessage = privateInbox.insert(row("expired private message", 1));
   seedStore.close();
@@ -113,8 +113,29 @@ test("local runtime routes SMTP and startup retention through the local capture 
 
   // runtime.inbox remains the root service used by existing HTTP/webhook/SMS
   // consumers; only the SMTP receiver receives the local-scoped service.
+  // Root records intentionally have no automatic retention in local SMTP
+  // mode, preventing them from pruning either trusted SMTP or private rows.
   assert.ok(runtime.inbox instanceof InboxService);
   assert.equal((runtime.inbox as unknown as { store: unknown }).store, runtime.store);
+
+  const trustedExpired = runtime.store.forLocalSmtpCapture().insert(row("expired trusted after startup", 1));
+  const rootTestEmail = runtime.inbox.ingest({ ...row("root test email", 2), source: "test" });
+  const rootWebhook = runtime.inbox.ingest({
+    type: "webhook",
+    source: "http",
+    sender: "provider@example.test",
+    recipient: "developer@example.test",
+    subject: "root webhook",
+    textBody: "payload",
+    htmlBody: "",
+    rawData: "{\"event\":\"local-test\"}",
+    createdAt: 3,
+  });
+  assert.ok(runtime.store.get(rootTestEmail.id));
+  assert.ok(runtime.store.get(rootWebhook.id));
+  assert.ok(runtime.store.forLocalSmtpCapture().get(trustedExpired.id));
+  assert.ok(privateStore.get(privateMessage.id));
+  assert.equal(runtime.store.count(), 4, "root post-ingest retention is disabled in local SMTP mode");
 
   const session = {
     envelope: {
@@ -140,10 +161,12 @@ test("local runtime routes SMTP and startup retention through the local capture 
   stream.end("From: sender@example.test\r\nTo: arbitrary@example.test\r\nSubject: Local SMTP\r\n\r\nCode 482913");
   assert.equal(await delivered, undefined);
 
-  const captured = localStore.list();
-  assert.equal(captured.length, 1);
-  assert.equal(captured[0]?.subject, "Local SMTP");
-  assert.equal(runtime.store.count(), 2);
+  const captured = localStore.listPage({ limit: 10 }).items;
+  assert.equal(captured.length, 1, "subsequent local SMTP retention removes the expired trusted row");
+  assert.ok(captured.some(message => message.subject === "Local SMTP"));
+  const smtpMessage = captured.find(message => message.subject === "Local SMTP");
+  assert.equal(localStore.getLocalSmtp(smtpMessage!.id)?.subject, "Local SMTP");
+  assert.equal(runtime.store.count(), 4);
   assert.equal(privateStore.count(), 1);
   assert.equal(localStore.get(privateMessage.id), null);
   assert.equal(privateStore.get(privateMessage.id)?.subject, "expired private message");

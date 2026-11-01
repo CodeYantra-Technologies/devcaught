@@ -9,7 +9,7 @@ import type {
   StoredMessage,
 } from "../../../../packages/shared/src/types.ts";
 import { sanitizeEmailHtml } from "../ingest/sanitizePreview.ts";
-import { MESSAGE_SCHEMA, MIGRATION_2026_10_15_SMS } from "./schema.ts";
+import { MESSAGE_SCHEMA, MIGRATION_2026_10_15_SMS, MIGRATION_LOCAL_SMTP_PROVENANCE } from "./schema.ts";
 
 /** Result of an SMS insert: either a new row or the deduplicated original. */
 export type SmsInsertResult =
@@ -40,12 +40,16 @@ export interface LocalCapturePage {
 export interface LocalCaptureStore extends ScopedInboxStore {
   /** List a bounded page of local captures, ordered newest first. */
   listPage(options: { limit: number; cursor?: string | null; query?: string }): LocalCapturePage;
+  /** Read only trusted local SMTP detail; legacy and generic rows return null. */
+  getLocalSmtp(id: string): MessageDetail | null;
 }
 
 export interface InboxStore {
   forInbox(inboxId: string): ScopedInboxStore;
   /** Local capture only: every operation is constrained to inbox_id IS NULL. */
   forLocalCapture(): LocalCaptureStore;
+  /** Trusted SMTP-only capability; inserts and retention are provenance-scoped. */
+  forLocalSmtpCapture(): ScopedInboxStore;
   insert(message: Omit<StoredMessage, "id"> & { id?: string }): StoredMessage;
   /**
    * Insert an SMS event, deduplicating provider retries by `dedupeKey` (a
@@ -150,6 +154,12 @@ function escapeLike(value: string): string {
   return value.replace(/([%_\\])/g, "\\$1");
 }
 
+function rejectCaptureOrigin(message: object): void {
+  if (Object.hasOwn(message, "captureOrigin") || Object.hasOwn(message, "capture_origin")) {
+    throw new Error("Capture origin is assigned only by trusted ingestion");
+  }
+}
+
 const MAX_LOCAL_PAGE_SIZE = 50;
 const MAX_LOCAL_CURSOR_LENGTH = 1_024;
 
@@ -215,6 +225,9 @@ export function migrateInboxStore(database: DatabaseSync): void {
     if (!columns.some((column) => column.name === "inbox_id")) {
       database.exec("ALTER TABLE messages ADD COLUMN inbox_id TEXT");
     }
+    if (!columns.some((column) => column.name === "capture_origin")) {
+      database.exec(MIGRATION_LOCAL_SMTP_PROVENANCE);
+    }
     database.exec("DROP INDEX IF EXISTS idx_messages_dedupe_key");
     database.exec(MIGRATION_2026_10_15_SMS);
     database.exec("COMMIT");
@@ -274,6 +287,14 @@ export function openInboxStore(dbPath: string, options: {requirePersistent?: boo
       text_body, html_body, raw_data, detections, created_at,
       dedupe_key, inbox_id
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  const trustedLocalSmtpInsertStmt = database.prepare(`
+    INSERT INTO messages (
+      id, type, source, sender, recipient, subject,
+      text_body, html_body, raw_data, detections, created_at,
+      dedupe_key, inbox_id, capture_origin
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 'local_smtp')
   `);
 
   const listStmt = database.prepare(`
@@ -417,7 +438,7 @@ export function openInboxStore(dbPath: string, options: {requirePersistent?: boo
       CASE WHEN html_body IS NOT NULL AND html_body != '' THEN 1 ELSE 0 END AS has_html,
       CASE WHEN text_body IS NOT NULL AND text_body != '' THEN 1 ELSE 0 END AS has_text
     FROM messages
-    WHERE inbox_id IS NULL
+    WHERE inbox_id IS NULL AND capture_origin = 'local_smtp'
       AND (? IS NULL OR created_at < ? OR (created_at = ? AND id < ?))
     ORDER BY created_at DESC, id DESC
     LIMIT ?
@@ -427,7 +448,7 @@ export function openInboxStore(dbPath: string, options: {requirePersistent?: boo
       CASE WHEN html_body IS NOT NULL AND html_body != '' THEN 1 ELSE 0 END AS has_html,
       CASE WHEN text_body IS NOT NULL AND text_body != '' THEN 1 ELSE 0 END AS has_text
     FROM messages
-    WHERE inbox_id IS NULL
+    WHERE inbox_id IS NULL AND capture_origin = 'local_smtp'
       AND (
         COALESCE(subject, '') LIKE ? ESCAPE '\\'
         OR COALESCE(sender, '') LIKE ? ESCAPE '\\'
@@ -441,6 +462,51 @@ export function openInboxStore(dbPath: string, options: {requirePersistent?: boo
   const localGetStmt = database.prepare(`
     SELECT id, type, source, sender, recipient, subject, text_body, html_body,
       detections, created_at FROM messages WHERE id = ? AND inbox_id IS NULL
+  `);
+  const trustedLocalSmtpGetStmt = database.prepare(`
+    SELECT id, type, source, sender, recipient, subject, text_body, html_body,
+      detections, created_at FROM messages
+    WHERE id = ? AND inbox_id IS NULL AND capture_origin = 'local_smtp'
+  `);
+  const trustedLocalSmtpListStmt = database.prepare(`
+    SELECT id, type, source, sender, recipient, subject, detections, created_at,
+      CASE WHEN html_body IS NOT NULL AND html_body != '' THEN 1 ELSE 0 END AS has_html,
+      CASE WHEN text_body IS NOT NULL AND text_body != '' THEN 1 ELSE 0 END AS has_text
+    FROM messages WHERE inbox_id IS NULL AND capture_origin = 'local_smtp'
+    ORDER BY created_at DESC, id DESC
+  `);
+  const trustedLocalSmtpSearchStmt = database.prepare(`
+    SELECT id, type, source, sender, recipient, subject, detections, created_at,
+      CASE WHEN html_body IS NOT NULL AND html_body != '' THEN 1 ELSE 0 END AS has_html,
+      CASE WHEN text_body IS NOT NULL AND text_body != '' THEN 1 ELSE 0 END AS has_text
+    FROM messages WHERE inbox_id IS NULL AND capture_origin = 'local_smtp' AND (
+      COALESCE(subject, '') LIKE ? ESCAPE '\\'
+      OR COALESCE(sender, '') LIKE ? ESCAPE '\\'
+      OR COALESCE(recipient, '') LIKE ? ESCAPE '\\'
+      OR COALESCE(text_body, '') LIKE ? ESCAPE '\\'
+    ) ORDER BY created_at DESC, id DESC
+  `);
+  const trustedLocalSmtpRawStmt = database.prepare(`
+    SELECT raw_data FROM messages
+    WHERE id = ? AND inbox_id IS NULL AND capture_origin = 'local_smtp'
+  `);
+  const trustedLocalSmtpDeleteStmt = database.prepare(`
+    DELETE FROM messages WHERE id = ? AND inbox_id IS NULL AND capture_origin = 'local_smtp'
+  `);
+  const trustedLocalSmtpClearStmt = database.prepare(
+    "DELETE FROM messages WHERE inbox_id IS NULL AND capture_origin = 'local_smtp'",
+  );
+  const trustedLocalSmtpCountStmt = database.prepare(
+    "SELECT COUNT(*) AS n FROM messages WHERE inbox_id IS NULL AND capture_origin = 'local_smtp'",
+  );
+  const trustedLocalSmtpPruneExpiredStmt = database.prepare(
+    "DELETE FROM messages WHERE inbox_id IS NULL AND capture_origin = 'local_smtp' AND created_at < ?",
+  );
+  const trustedLocalSmtpPruneOverMaxStmt = database.prepare(`
+    DELETE FROM messages WHERE inbox_id IS NULL AND capture_origin = 'local_smtp' AND id NOT IN (
+      SELECT id FROM messages WHERE inbox_id IS NULL AND capture_origin = 'local_smtp'
+      ORDER BY created_at DESC, id DESC LIMIT ?
+    )
   `);
   const localRawStmt = database.prepare(
     "SELECT raw_data FROM messages WHERE id = ? AND inbox_id IS NULL",
@@ -493,6 +559,69 @@ export function openInboxStore(dbPath: string, options: {requirePersistent?: boo
   }
 
   const store: InboxStore = {
+    forLocalSmtpCapture() {
+      return {
+        insert(message) {
+          rejectInboxAssignment(message);
+          rejectCaptureOrigin(message);
+          if (message.type !== "email" || message.source !== "smtp") {
+            throw new Error("Trusted local SMTP storage accepts only SMTP email messages");
+          }
+          const id = message.id ?? crypto.randomUUID();
+          trustedLocalSmtpInsertStmt.run(
+            id,
+            message.type,
+            message.source,
+            message.sender,
+            message.recipient,
+            message.subject,
+            message.textBody,
+            message.htmlBody,
+            message.rawData,
+            JSON.stringify(message.detections),
+            message.createdAt,
+          );
+          const { id: _ignored, ...rest } = message;
+          return { ...rest, id };
+        },
+        insertSms() {
+          throw new Error("Trusted local SMTP storage does not accept SMS messages");
+        },
+        list(query) {
+          const trimmed = query?.trim();
+          const pattern = trimmed ? `%${escapeLike(trimmed)}%` : "";
+          const rows = (trimmed
+            ? trustedLocalSmtpSearchStmt.all(pattern, pattern, pattern, pattern)
+            : trustedLocalSmtpListStmt.all()) as unknown as MessageRow[];
+          return rows.map(toSummary);
+        },
+        get(id) {
+          const row = trustedLocalSmtpGetStmt.get(id) as MessageRow | undefined;
+          return row ? toDetail(row) : null;
+        },
+        getRaw(id) {
+          const row = trustedLocalSmtpRawStmt.get(id) as { raw_data: string | null } | undefined;
+          return row?.raw_data ?? null;
+        },
+        delete(id) {
+          return trustedLocalSmtpDeleteStmt.run(id).changes > 0;
+        },
+        clear() {
+          return Number(trustedLocalSmtpClearStmt.run().changes);
+        },
+        count() {
+          return (trustedLocalSmtpCountStmt.get() as { n: number }).n;
+        },
+        pruneExpired(now, retentionDays) {
+          if (!Number.isFinite(retentionDays) || retentionDays <= 0) return 0;
+          return Number(trustedLocalSmtpPruneExpiredStmt.run(now - retentionDays * 86_400_000).changes);
+        },
+        pruneOverMax(maxMessages) {
+          if (!Number.isInteger(maxMessages) || maxMessages <= 0) return 0;
+          return Number(trustedLocalSmtpPruneOverMaxStmt.run(maxMessages).changes);
+        },
+      };
+    },
     forInbox(inboxId) {
       assertInboxId(inboxId);
 
@@ -502,6 +631,7 @@ export function openInboxStore(dbPath: string, options: {requirePersistent?: boo
 
       return {
         insert(message) {
+          rejectCaptureOrigin(message);
           const id = message.id ?? crypto.randomUUID();
           scopedInsertStmt.run(
             id,
@@ -522,6 +652,7 @@ export function openInboxStore(dbPath: string, options: {requirePersistent?: boo
           return { ...rest, id };
         },
         insertSms(message) {
+          rejectCaptureOrigin(message);
           const dedupeKey = message.dedupeKey;
 
           if (dedupeKey) {
@@ -648,10 +779,12 @@ export function openInboxStore(dbPath: string, options: {requirePersistent?: boo
       return {
         insert(message) {
           rejectInboxAssignment(message);
+          rejectCaptureOrigin(message);
           return writeMessage(message, null);
         },
         insertSms(message) {
           rejectInboxAssignment(message);
+          rejectCaptureOrigin(message);
           const { dedupeKey, ...storedMessage } = message;
           if (dedupeKey) {
             const existing = localByDedupeKeyStmt.get(dedupeKey) as { id: string } | undefined;
@@ -705,6 +838,10 @@ export function openInboxStore(dbPath: string, options: {requirePersistent?: boo
               : null,
           };
         },
+        getLocalSmtp(id) {
+          const row = trustedLocalSmtpGetStmt.get(id) as MessageRow | undefined;
+          return row ? toDetail(row) : null;
+        },
         get(id) {
           const row = localGetStmt.get(id) as MessageRow | undefined;
           if (!row) return null;
@@ -745,10 +882,12 @@ export function openInboxStore(dbPath: string, options: {requirePersistent?: boo
       };
     },
     insert(message) {
+      rejectCaptureOrigin(message);
       return writeMessage(message, null);
     },
 
     insertSms(message) {
+      rejectCaptureOrigin(message);
       const dedupeKey = message.dedupeKey;
       if (dedupeKey) {
         const existing = byDedupeKeyStmt.get(dedupeKey) as { id: string } | undefined;

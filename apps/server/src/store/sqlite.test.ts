@@ -63,30 +63,121 @@ describe("InboxStore", () => {
 });
 
 describe("local capture storage view", () => {
+  it("exposes only trusted local SMTP provenance through pagination and detail reads", () => {
+    const { store } = openInboxStore(":memory:");
+    try {
+      const local = store.forLocalCapture();
+      const trusted = store.forLocalSmtpCapture();
+      const privateInbox = store.forInbox("private-inbox-a");
+      const message = (id: string, type: "email" | "webhook" | "sms", source: "smtp" | "http" | "test", subject: string) => ({
+        id, type, source, sender: "sender@example.test", recipient: "dev@example.test", subject,
+        textBody: "body", htmlBody: "", rawData: "raw provider payload", detections: [], createdAt: 10_000,
+      });
+
+      const trustedRow = trusted.insert(message("trusted", "email", "smtp", "trusted SMTP") as never);
+      store.insert(message("root-smtp", "email", "smtp", "root SMTP") as never);
+      store.insert(message("root-webhook", "webhook", "http", "root webhook") as never);
+      store.insertSms({ ...message("root-sms", "sms", "http", "root SMS"), dedupeKey: null } as never);
+      const privateRow = privateInbox.insert(message("private-smtp", "email", "smtp", "private SMTP") as never);
+
+      assert.deepEqual(local.listPage({ limit: 50 }).items.map(item => item.id), [trustedRow.id]);
+      assert.equal(local.getLocalSmtp(trustedRow.id)?.subject, "trusted SMTP");
+      for (const id of ["root-smtp", "root-webhook", "root-sms", privateRow.id, "legacy-null"]) {
+        assert.equal(local.getLocalSmtp(id), null, `${id} is not trusted local SMTP`);
+      }
+      assert.equal(local.list().length, 4, "generic unassigned listing retains its compatibility scope");
+      assert.equal(trusted.count(), 1);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("trusted local SMTP insertion rejects non-SMTP types and caller-supplied provenance", () => {
+    const { store } = openInboxStore(":memory:");
+    try {
+      const trusted = store.forLocalSmtpCapture();
+      const base = {
+        type: "email" as const, source: "smtp" as const, sender: "sender@example.test",
+        recipient: "dev@example.test", subject: "valid", textBody: "body", htmlBody: "",
+        rawData: "raw", detections: [], createdAt: 1,
+      };
+      assert.throws(() => trusted.insert({ ...base, type: "sms" } as never), /only SMTP email/);
+      assert.throws(() => trusted.insert({ ...base, type: "webhook", source: "http" } as never), /only SMTP email/);
+      assert.throws(() => trusted.insert({ ...base, source: "test" } as never), /only SMTP email/);
+      assert.throws(() => trusted.insert({ ...base, captureOrigin: "local_smtp" } as never), /assigned only by trusted ingestion/);
+      assert.throws(() => trusted.insert({ ...base, capture_origin: "local_smtp" } as never), /assigned only by trusted ingestion/);
+      assert.throws(() => trusted.insertSms({ ...base, type: "sms", dedupeKey: null } as never), /does not accept SMS/);
+
+      for (const assignment of ["captureOrigin", "capture_origin"] as const) {
+        assert.throws(() => store.insert({ ...base, [assignment]: "local_smtp" } as never), /assigned only by trusted ingestion/);
+        assert.throws(() => store.insertSms({ ...base, type: "sms", dedupeKey: null, [assignment]: "local_smtp" } as never), /assigned only by trusted ingestion/);
+        assert.throws(() => store.forInbox("private-inbox-a").insert({ ...base, [assignment]: "local_smtp" } as never), /assigned only by trusted ingestion/);
+        assert.throws(() => store.forInbox("private-inbox-a").insertSms({ ...base, type: "sms", dedupeKey: null, [assignment]: "local_smtp" } as never), /assigned only by trusted ingestion/);
+      }
+      assert.equal(store.count(), 0);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("trusted local SMTP retention cannot prune root, legacy, or private rows", () => {
+    const { store } = openInboxStore(":memory:");
+    try {
+      const trusted = store.forLocalSmtpCapture();
+      const privateInbox = store.forInbox("private-inbox-a");
+      const row = (id: string, createdAt: number) => ({
+        id, type: "email" as const, source: "smtp" as const, sender: "", recipient: "",
+        subject: id, textBody: "", htmlBody: "", rawData: "", detections: [], createdAt,
+      });
+      trusted.insert(row("trusted-old", 1));
+      trusted.insert(row("trusted-middle", 80_000_000));
+      trusted.insert(row("trusted-new", 90_000_000));
+      store.insert(row("root-old", 1));
+      privateInbox.insert(row("private-old", 1));
+      const legacyId = "legacy-null-origin";
+      // Simulate a row that predates the provenance migration: NULL remains
+      // untrusted even though it is unassigned and SMTP-shaped.
+      store.insert(row(legacyId, 1));
+
+      assert.equal(trusted.pruneExpired(90_000_000, 1), 1);
+      assert.ok(store.get("root-old"));
+      assert.ok(store.get(legacyId));
+      assert.ok(privateInbox.get("private-old"));
+      assert.equal(trusted.pruneOverMax(1), 1);
+      assert.ok(store.get("root-old"));
+      assert.ok(store.get(legacyId));
+      assert.ok(privateInbox.get("private-old"));
+      assert.equal(trusted.count(), 1);
+    } finally {
+      store.close();
+    }
+  });
+
   it("returns bounded deterministic local pages with validated cursors and summary-only data", () => {
     const { store } = openInboxStore(":memory:");
     try {
       const local = store.forLocalCapture();
+      const trustedSmtp = store.forLocalSmtpCapture();
       const privateInbox = store.forInbox("private-inbox-a");
-      const row = (id: string, createdAt: number, subject: string, type: "email" | "sms" = "email") => ({
+      const row = (id: string, createdAt: number, subject: string) => ({
         id,
-        type,
+        type: "email" as const,
         source: "smtp" as const,
         sender: "sender@example.test",
         recipient: "dev@example.test",
         subject,
         textBody: "body 482913",
         htmlBody: "<b>private html body</b>",
-        rawData: JSON.stringify({ sms: { provider: "twilio", from: "+15550000000", body: "provider secret" }, request: { token: "provider secret" } }),
+        rawData: "RAW-MIME-SECRET",
         detections: [],
         createdAt,
       });
 
       const inserted = [
-        local.insert(row("a", 5_000, "newest")),
-        local.insert(row("c", 4_000, "tie-later-id", "sms")),
-        local.insert(row("b", 4_000, "tie-earlier-id")),
-        local.insert(row("d", 3_000, "oldest")),
+        trustedSmtp.insert(row("a", 5_000, "newest")),
+        trustedSmtp.insert(row("c", 4_000, "tie-later-id")),
+        trustedSmtp.insert(row("b", 4_000, "tie-earlier-id")),
+        trustedSmtp.insert(row("d", 3_000, "oldest")),
       ];
       const privateRow = privateInbox.insert(row("private", 9_000, "private only"));
 
@@ -98,10 +189,9 @@ describe("local capture storage view", () => {
       assert.equal(first.hasMore, true);
       assert.ok(first.nextCursor);
       assert.ok(!JSON.stringify(first).includes("private only"));
-      assert.ok(!JSON.stringify(first).includes("provider secret"));
       assert.ok(!JSON.stringify(first).includes("private html body"));
+      assert.ok(!JSON.stringify(first).includes("RAW-MIME-SECRET"));
       assert.ok(!JSON.stringify(first).includes("rawData"));
-      assert.equal(first.items[1]?.sms, undefined);
 
       const second = local.listPage({ limit: 2, cursor: first.nextCursor });
       assert.deepEqual(second.items.map(item => item.id), ["b", "d"]);
@@ -125,11 +215,12 @@ describe("local capture storage view", () => {
     const { store } = openInboxStore(":memory:");
     try {
       const local = store.forLocalCapture();
+      const trusted = store.forLocalSmtpCapture();
       const row = (id: string) => ({
         id, type: "email" as const, source: "smtp" as const, sender: "", recipient: "",
         subject: id, textBody: "", htmlBody: "", rawData: "", detections: [], createdAt: 1,
       });
-      for (let i = 0; i < 51; i++) local.insert(row(`message-${String(i).padStart(2, "0")}`));
+      for (let i = 0; i < 51; i++) trusted.insert(row(`message-${String(i).padStart(2, "0")}`));
 
       for (const limit of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY] as number[]) {
         assert.throws(() => local.listPage({ limit }), /positive integer/);
@@ -361,6 +452,11 @@ describe("SMS storage", () => {
     const { store } = openInboxStore(dbPath);
     assert.equal(store.count(), 1);
     assert.equal(store.get("legacy-1")?.subject, "Old mail");
+    assert.equal(store.forLocalCapture().getLocalSmtp("legacy-1"), null);
+    assert.deepEqual(store.forLocalCapture().listPage({ limit: 10 }).items, []);
+    assert.equal(store.forLocalSmtpCapture().pruneExpired(Date.now(), 1), 0);
+    assert.equal(store.forLocalSmtpCapture().pruneOverMax(1), 0);
+    assert.equal(store.get("legacy-1")?.subject, "Old mail", "trusted retention preserves migrated legacy data");
     const inserted = store.insertSms(smsRow());
     assert.equal(inserted.duplicate, false);
     assert.equal(store.count(), 2);
@@ -383,6 +479,7 @@ describe("SMS storage", () => {
 
       const columns = db.prepare("PRAGMA table_info(messages)").all() as { name: string }[];
       assert.ok(columns.some((column) => column.name === "inbox_id"));
+      assert.ok(columns.some((column) => column.name === "capture_origin"));
 
       const row = db.prepare(
         "SELECT inbox_id FROM messages WHERE id = ?",
@@ -390,6 +487,14 @@ describe("SMS storage", () => {
 
       assert.ok(row);
       assert.equal(row.inbox_id, null);
+      const provenance = db.prepare(
+        "SELECT capture_origin FROM messages WHERE id = ?",
+      ).get("legacy-unassigned") as { capture_origin: string | null } | undefined;
+      assert.equal(provenance?.capture_origin, null, "migration never backfills legacy rows");
+      assert.throws(() => db.prepare(`
+        INSERT INTO messages (id, type, source, detections, created_at, inbox_id, capture_origin)
+        VALUES ('invalid-origin', 'webhook', 'http', '[]', 1000, NULL, 'local_smtp')
+      `).run(), /CHECK constraint failed/i);
     } finally {
       db.close();
     }
@@ -446,6 +551,7 @@ describe("SMS storage", () => {
     assert.throws(() => migrateInboxStore(failing), /boom/);
     const columns = db.prepare("PRAGMA table_info(messages)").all() as { name: string }[];
     assert.ok(!columns.some((column) => column.name === "dedupe_key"));
+    assert.ok(!columns.some((column) => column.name === "capture_origin"));
     const rows = db.prepare("SELECT COUNT(*) AS n FROM messages").get() as { n: number };
     assert.equal(rows.n, 1);
     db.close();
