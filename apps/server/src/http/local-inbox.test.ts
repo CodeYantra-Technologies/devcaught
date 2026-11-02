@@ -123,6 +123,27 @@ test("allows only a fixed health response on an eligible IPv4 loopback listener"
   assert.equal(response.headers["access-control-allow-origin"], undefined);
 });
 
+test("redirects the root to the local dashboard only when the health capability is available", async () => {
+  const local = await request(fixture().middleware, { url: "/" });
+  assert.equal(local.status, 302);
+  assert.equal(local.headers.location, "/local-inbox");
+  assert.equal(local.headers["cache-control"], "no-store");
+  assert.equal(local.fellThrough, false);
+
+  for (const options of [
+    { mode: "private" as const },
+    { smtpRunning: false },
+    { smtpHost: "0.0.0.0" },
+    { address: "0.0.0.0" },
+    { livePreview: true },
+    { runtimeFailure: true },
+  ]) {
+    const response = await request(fixture(options).middleware, { url: "/" });
+    assert.equal(response.status, 200, JSON.stringify(options));
+    assert.equal(response.fellThrough, true, JSON.stringify(options));
+  }
+});
+
 test("accepts IPv6 loopback only with its bracketed Host authority", async () => {
   const { middleware } = fixture({ address: "::1" });
   const response = await request(middleware, { host: "[::1]:8080" });

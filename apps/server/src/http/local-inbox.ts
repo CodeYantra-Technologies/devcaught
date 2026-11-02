@@ -94,6 +94,13 @@ function send(res: ServerResponse, status: number, body: Record<string, unknown>
   res.end(JSON.stringify(body));
 }
 
+function hasLocalCaptureCapability(runtime: DevCaughtRuntime): boolean {
+  return runtime.config.smtpRoutingMode === "local" &&
+    runtime.smtp.status.running &&
+    isNumericLoopbackHost(runtime.smtp.status.host) &&
+    runtime.smtp.status.host === runtime.config.host;
+}
+
 type LocalRoute =
   | { kind: "health" }
   | { kind: "list"; limit: number; cursor?: string; query?: string }
@@ -236,6 +243,40 @@ export function createLocalInboxMiddleware(
 
   const handler = (req: IncomingMessage, res: ServerResponse, next: Connect.NextFunction): void => {
     const target = req.url ?? "";
+    if (target === "/" && req.method === "GET") {
+      void (async () => {
+        if (!active || livePreview) {
+          next();
+          return;
+        }
+        const bound = actualAuthority(server);
+        if (!bound || requestSecurityFailure(req, bound.authority)) {
+          next();
+          return;
+        }
+
+        let runtime: DevCaughtRuntime;
+        try {
+          runtime = await getRuntime();
+        } catch {
+          next();
+          return;
+        }
+        if (!active || res.destroyed || res.writableEnded) return;
+        if (!hasLocalCaptureCapability(runtime)) {
+          next();
+          return;
+        }
+
+        res.statusCode = 302;
+        res.setHeader("location", "/local-inbox");
+        res.setHeader("cache-control", "no-store");
+        res.end();
+      })().catch(() => {
+        if (!res.headersSent && !res.destroyed && !res.writableEnded) next();
+      });
+      return;
+    }
     if (!isReservedNamespace(target)) {
       next();
       return;
@@ -274,13 +315,7 @@ export function createLocalInboxMiddleware(
         return;
       }
       if (!active || res.destroyed || res.writableEnded) return;
-      if (
-        !active ||
-        runtime.config.smtpRoutingMode !== "local" ||
-        !runtime.smtp.status.running ||
-        !isNumericLoopbackHost(runtime.smtp.status.host) ||
-        runtime.smtp.status.host !== runtime.config.host
-      ) {
+      if (!active || !hasLocalCaptureCapability(runtime)) {
         send(res, 503, { ok: false, error: "Unavailable" });
         return;
       }
