@@ -2,10 +2,12 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Connect, ViteDevServer } from "vite";
 import { isNumericLoopbackHost } from "../config.ts";
 import { ensureRuntime, type DevCaughtRuntime } from "../runtime.ts";
+import { normalizeWebhook, WEBHOOK_SIZE_LIMIT } from "../ingest/normalizeWebhook.ts";
 
 const namespace = "/__devcaught/local-inbox";
 const capabilityPath = `${namespace}/health`;
 const messagesPath = `${namespace}/messages`;
+const webhooksPath = `${namespace}/webhooks`;
 const MAX_PATH_DECODE_PASSES = 32;
 const MAX_REQUEST_TARGET_LENGTH = 4_096;
 const MAX_QUERY_STRING_LENGTH = 2_048;
@@ -15,6 +17,7 @@ const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 50;
 
 type RuntimeProvider = () => Promise<DevCaughtRuntime>;
+type LocalChannel = "all" | "email" | "webhook";
 
 export interface LocalInboxMiddleware {
   handler: (req: IncomingMessage, res: ServerResponse, next: Connect.NextFunction) => void;
@@ -103,8 +106,9 @@ function hasLocalCaptureCapability(runtime: DevCaughtRuntime): boolean {
 
 type LocalRoute =
   | { kind: "health" }
-  | { kind: "list"; limit: number; cursor?: string; query?: string }
+  | { kind: "list"; limit: number; cursor?: string; query?: string; channel: LocalChannel }
   | { kind: "detail"; id: string }
+  | { kind: "webhook-ingress" }
   | { kind: "missing" }
   | { kind: "bad-request" };
 
@@ -112,6 +116,7 @@ function parseLocalRoute(target: string): LocalRoute {
   if (target.length > MAX_REQUEST_TARGET_LENGTH) return { kind: "bad-request" };
   const rawPath = target.split(/[?#]/, 1)[0] ?? "";
   if (rawPath === capabilityPath) return target === capabilityPath ? { kind: "health" } : { kind: "missing" };
+  if (rawPath === webhooksPath) return target === webhooksPath ? { kind: "webhook-ingress" } : { kind: "bad-request" };
   if (target.includes("#")) return rawPath === messagesPath || rawPath.startsWith(`${messagesPath}/`)
     ? { kind: "bad-request" }
     : { kind: "missing" };
@@ -129,7 +134,7 @@ function parseLocalRoute(target: string): LocalRoute {
     const params = new URLSearchParams(rawQuery);
     const seen = new Set<string>();
     for (const [key] of params) {
-      if (!new Set(["limit", "cursor", "query"]).has(key) || seen.has(key)) return { kind: "bad-request" };
+      if (!new Set(["limit", "cursor", "query", "channel"]).has(key) || seen.has(key)) return { kind: "bad-request" };
       seen.add(key);
     }
     const rawLimit = params.get("limit");
@@ -146,7 +151,9 @@ function parseLocalRoute(target: string): LocalRoute {
       query !== undefined &&
       (query.length > MAX_SEARCH_QUERY_LENGTH || /[\u0000-\u001f\u007f]/.test(query))
     ) return { kind: "bad-request" };
-    return { kind: "list", limit, ...(cursor === undefined ? {} : { cursor }), ...(query === undefined ? {} : { query }) };
+    const channelValue = params.get("channel") ?? "all";
+    if (channelValue !== "all" && channelValue !== "email" && channelValue !== "webhook") return { kind: "bad-request" };
+    return { kind: "list", limit, channel: channelValue, ...(cursor === undefined ? {} : { cursor }), ...(query === undefined ? {} : { query }) };
   }
 
   const id = rawPath.slice(messagesPath.length + 1);
@@ -166,6 +173,18 @@ function safeSummary(message: {
   hasHtml: boolean;
   hasText: boolean;
 }) {
+  if (message.type === "webhook") {
+    return {
+      id: message.id,
+      type: message.type,
+      source: message.source,
+      method: "POST",
+      subject: message.subject,
+      createdAt: message.createdAt,
+      hasHtml: message.hasHtml,
+      hasText: message.hasText,
+    };
+  }
   return {
     id: message.id,
     type: message.type,
@@ -231,6 +250,58 @@ function requestSecurityFailure(req: IncomingMessage, authority: string): string
     if (fetchSites.length === 1 && fetchSites[0] !== "same-origin") return "unavailable";
   }
   return undefined;
+}
+
+async function readJsonBody(req: IncomingMessage): Promise<{ body?: string; status?: 400 | 413 | 415 }> {
+  const encodings = rawHeaderValues(req, "content-encoding");
+  if (encodings.length > 1 || (encodings.length === 1 && encodings[0]!.toLowerCase() !== "identity")) {
+    return { status: 415 };
+  }
+  const contentTypes = rawHeaderValues(req, "content-type");
+  if (contentTypes.length !== 1 || !/^application\/json(?:\s*;\s*charset=utf-8)?\s*$/i.test(contentTypes[0]!)) {
+    return { status: 415 };
+  }
+  const lengths = rawHeaderValues(req, "content-length");
+  if (lengths.length > 1 || (lengths.length === 1 && !/^\d+$/.test(lengths[0]!))) return { status: 400 };
+  if (lengths.length === 1 && Number(lengths[0]) > WEBHOOK_SIZE_LIMIT) {
+    req.resume();
+    return { status: 413 };
+  }
+
+  const chunks: Buffer[] = [];
+  let size = 0;
+  let oversized = false;
+  try {
+    for await (const chunk of req) {
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
+      size += bytes.byteLength;
+      if (size > WEBHOOK_SIZE_LIMIT) {
+        oversized = true;
+        chunks.length = 0;
+        continue;
+      }
+      if (!oversized) chunks.push(bytes);
+    }
+  } catch {
+    return { status: 400 };
+  }
+  if (oversized) return { status: 413 };
+  try {
+    return { body: new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)) };
+  } catch {
+    return { status: 400 };
+  }
+}
+
+function requestHeaderRecord(req: IncomingMessage): Record<string, string> {
+  const headers: Record<string, string> = {};
+  for (let i = 0; i < req.rawHeaders.length; i += 2) {
+    const name = (req.rawHeaders[i] ?? "").toLowerCase();
+    if (!name || name === "host" || name === "content-length" || name === "transfer-encoding") continue;
+    const value = req.rawHeaders[i + 1] ?? "";
+    headers[name] = headers[name] === undefined ? value : `${headers[name]}, ${value}`;
+  }
+  return headers;
 }
 
 /** Development-only gate for the reserved local-capture API namespace. */
@@ -302,7 +373,8 @@ export function createLocalInboxMiddleware(
         send(res, req.method === "GET" ? 404 : 405, { ok: false, error: req.method === "GET" ? "Not found" : "Method not allowed" });
         return;
       }
-      if (req.method !== "GET") {
+      if ((route.kind === "webhook-ingress" && req.method !== "POST") ||
+        (route.kind !== "webhook-ingress" && req.method !== "GET")) {
         send(res, 405, { ok: false, error: "Method not allowed" });
         return;
       }
@@ -324,6 +396,41 @@ export function createLocalInboxMiddleware(
         send(res, 200, { ok: true, mode: "local-capture" });
         return;
       }
+      if (route.kind === "webhook-ingress") {
+        const bodyResult = await readJsonBody(req);
+        if (bodyResult.status) {
+          send(res, bodyResult.status, {
+            ok: false,
+            error: bodyResult.status === 413 ? "Request exceeds 1 MB limit" :
+              bodyResult.status === 415 ? "Unsupported content type or encoding" : "Invalid request body",
+          });
+          return;
+        }
+        let parsedBody: unknown;
+        try {
+          parsedBody = JSON.parse(bodyResult.body ?? "");
+        } catch {
+          send(res, 400, { ok: false, error: "Invalid JSON body" });
+          return;
+        }
+        if (!runtime.store || typeof runtime.store.forLocalWebhookCapture !== "function") {
+          send(res, 503, { ok: false, error: "Unavailable" });
+          return;
+        }
+        try {
+          const normalized = normalizeWebhook({
+            method: "POST",
+            url: req.url ?? webhooksPath,
+            headers: requestHeaderRecord(req),
+            body: JSON.stringify(parsedBody),
+          });
+          const stored = runtime.store.forLocalWebhookCapture().insert({ ...normalized, detections: [] });
+          send(res, 201, { ok: true, id: stored.id });
+        } catch {
+          send(res, 503, { ok: false, error: "Unavailable" });
+        }
+        return;
+      }
       if (!runtime.store || typeof runtime.store.forLocalCapture !== "function") {
         send(res, 503, { ok: false, error: "Unavailable" });
         return;
@@ -331,7 +438,7 @@ export function createLocalInboxMiddleware(
       try {
         const localStore = runtime.store.forLocalCapture();
         if (route.kind === "list") {
-          const page = localStore.listPage({ limit: route.limit, cursor: route.cursor, query: route.query });
+          const page = localStore.listPage({ limit: route.limit, cursor: route.cursor, query: route.query, channel: route.channel });
           send(res, 200, {
             ok: true,
             items: page.items.map(safeSummary),
@@ -340,16 +447,23 @@ export function createLocalInboxMiddleware(
           });
           return;
         }
-        if (typeof localStore.getLocalSmtp !== "function") {
+        if (typeof localStore.getLocalCapture !== "function") {
           send(res, 503, { ok: false, error: "Unavailable" });
           return;
         }
-        const message = localStore.getLocalSmtp(route.id);
+        const message = localStore.getLocalCapture(route.id);
         if (!message) {
           send(res, 404, { ok: false, error: "Not found" });
           return;
         }
-        send(res, 200, { ok: true, message: { ...safeSummary(message), textBody: message.textBody } });
+        send(res, 200, {
+          ok: true,
+          message: {
+            ...safeSummary(message),
+            ...(message.type === "webhook" ? { method: "POST" } : {}),
+            textBody: message.textBody,
+          },
+        });
       } catch (error) {
         if (error instanceof Error && error.message === "Invalid local capture pagination cursor") {
           send(res, 400, { ok: false, error: "Invalid request" });

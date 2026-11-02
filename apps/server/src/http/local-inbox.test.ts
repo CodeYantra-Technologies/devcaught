@@ -56,6 +56,13 @@ function startRequest(
     origin?: string;
     fetchSite?: string;
     forwardedHost?: string;
+    forwardedProto?: string;
+    forwardedFor?: string;
+    contentType?: string;
+    contentLength?: string;
+    contentEncoding?: string;
+    body?: string | Uint8Array[];
+    extraHeaders?: Record<string, string>;
     remoteAddress?: string;
   } = {},
 ): {
@@ -79,14 +86,34 @@ function startRequest(
       ...(options.origin === undefined ? {} : { origin: options.origin }),
       ...(options.fetchSite === undefined ? {} : { "sec-fetch-site": options.fetchSite }),
       ...(options.forwardedHost === undefined ? {} : { "x-forwarded-host": options.forwardedHost }),
+      ...(options.forwardedProto === undefined ? {} : { "x-forwarded-proto": options.forwardedProto }),
+      ...(options.forwardedFor === undefined ? {} : { "x-forwarded-for": options.forwardedFor }),
+      ...(options.contentType === undefined ? {} : { "content-type": options.contentType }),
+      ...(options.contentLength === undefined ? {} : { "content-length": options.contentLength }),
+      ...(options.contentEncoding === undefined ? {} : { "content-encoding": options.contentEncoding }),
+      ...options.extraHeaders,
     },
     rawHeaders: options.rawHeaders ?? [
       "Host", options.host ?? "127.0.0.1:8080",
       ...(options.origin === undefined ? [] : ["Origin", options.origin]),
       ...(options.fetchSite === undefined ? [] : ["Sec-Fetch-Site", options.fetchSite]),
       ...(options.forwardedHost === undefined ? [] : ["X-Forwarded-Host", options.forwardedHost]),
+      ...(options.forwardedProto === undefined ? [] : ["X-Forwarded-Proto", options.forwardedProto]),
+      ...(options.forwardedFor === undefined ? [] : ["X-Forwarded-For", options.forwardedFor]),
+      ...(options.contentType === undefined ? [] : ["Content-Type", options.contentType]),
+      ...(options.contentLength === undefined ? [] : ["Content-Length", options.contentLength]),
+      ...(options.contentEncoding === undefined ? [] : ["Content-Encoding", options.contentEncoding]),
+      ...Object.entries(options.extraHeaders ?? {}).flatMap(([key, value]) => [key, value]),
     ],
     socket: { remoteAddress: options.remoteAddress ?? "127.0.0.1", encrypted: false },
+    resume() {},
+    async *[Symbol.asyncIterator]() {
+      if (Array.isArray(options.body)) {
+        for (const chunk of options.body) yield Buffer.from(chunk);
+      } else if (typeof options.body === "string") {
+        yield Buffer.from(options.body);
+      }
+    },
   } as unknown as IncomingMessage;
   const res = {
     ...responseState,
@@ -386,6 +413,142 @@ test("lists and details only trusted local SMTP records with allowlisted fields"
     assert.equal(response.status, 404, `${id} is outside trusted local SMTP provenance`);
     assert.equal(response.fellThrough, false);
   }
+});
+
+test("captures bounded JSON webhooks and exposes only trusted normalized fields", async t => {
+  const { store } = openInboxStore(":memory:");
+  t.after(() => store.close());
+  const trustedSmtp = store.forLocalSmtpCapture();
+  trustedSmtp.insert({
+    type: "email", source: "smtp", sender: "mail@example.test", recipient: "dev@example.test",
+    subject: "trusted smtp", textBody: "mail body", htmlBody: "", rawData: "smtp raw",
+    detections: [], createdAt: 1_000,
+  });
+  store.insert({
+    type: "webhook", source: "http", sender: "untrusted", recipient: "/root", subject: "root webhook",
+    textBody: "root body", htmlBody: "", rawData: "root raw", detections: [], createdAt: 9_000,
+  });
+  store.forInbox("private-a").insert({
+    type: "webhook", source: "http", sender: "private", recipient: "/private", subject: "private webhook",
+    textBody: "private body", htmlBody: "", rawData: "private raw", detections: [], createdAt: 10_000,
+  });
+  const { middleware } = fixture({ store });
+  const payload = JSON.stringify({ event: "synthetic.created", html: "<script>must remain text</script>" });
+  const payloadBytes = Buffer.from(payload);
+  const accepted = await request(middleware, {
+    url: "/__devcaught/local-inbox/webhooks",
+    method: "POST",
+    origin: "http://127.0.0.1:8080",
+    fetchSite: "same-origin",
+    contentType: "application/json; charset=utf-8",
+    body: [payloadBytes.subarray(0, 7), payloadBytes.subarray(7, 23), payloadBytes.subarray(23)],
+    extraHeaders: { Authorization: "Bearer header-secret", "X-Api-Key": "key-secret", "User-Agent": "Synthetic-Agent" },
+  });
+  assert.equal(accepted.status, 201);
+  const id = (JSON.parse(accepted.body) as { id: string }).id;
+  assert.equal(accepted.headers["cache-control"], "no-store");
+  assert.equal(accepted.headers["x-content-type-options"], "nosniff");
+
+  const list = await request(middleware, { url: "/__devcaught/local-inbox/messages?limit=10" });
+  const items = (JSON.parse(list.body) as { items: Array<Record<string, unknown>> }).items;
+  assert.deepEqual(items.map(item => item.id).sort(), [id, ...store.forLocalSmtpCapture().list().map(item => item.id)].sort());
+  const webhookSummary = items.find(item => item.id === id)!;
+  assert.equal(webhookSummary.method, "POST");
+  assert.equal(webhookSummary.subject, "synthetic.created");
+  assert.equal("recipient" in webhookSummary, false, "webhook URL and query data are not exposed");
+  assert.ok(!list.body.includes("header-secret"));
+  assert.ok(!list.body.includes("key-secret"));
+  assert.ok(!list.body.includes("root webhook"));
+  assert.ok(!list.body.includes("private webhook"));
+
+  const search = await request(middleware, { url: "/__devcaught/local-inbox/messages?query=synthetic.created" });
+  assert.deepEqual((JSON.parse(search.body) as { items: Array<{ id: string }> }).items.map(item => item.id), [id]);
+  const detailResponse = await request(middleware, { url: `/__devcaught/local-inbox/messages/${id}` });
+  assert.equal(detailResponse.status, 200);
+  const detail = (JSON.parse(detailResponse.body) as { message: Record<string, unknown> }).message;
+  assert.equal(detail.method, "POST");
+  assert.equal(detail.textBody, JSON.stringify(JSON.parse(payload), null, 2));
+  assert.deepEqual(Object.keys(detail).sort(), [
+    "createdAt", "hasHtml", "hasText", "id", "method", "source", "subject", "textBody", "type",
+  ]);
+  assert.ok(!detailResponse.body.includes("header-secret"));
+  assert.ok(!detailResponse.body.includes("key-secret"));
+  assert.ok(!detailResponse.body.includes("Authorization"));
+  assert.equal(JSON.parse(store.getRaw(id)!).headers.authorization, "[REDACTED]");
+  assert.equal(JSON.parse(store.getRaw(id)!).headers["x-api-key"], "[REDACTED]");
+  assert.equal(store.forLocalCapture().getLocalSmtp(id), null);
+  assert.equal(store.forLocalCapture().getLocalCapture(id)?.type, "webhook");
+});
+
+test("filters trusted channels before search pagination and preserves descending order", async t => {
+  const { store } = openInboxStore(":memory:");
+  t.after(() => store.close());
+  const email = (id: string, createdAt: number) => ({
+    id, type: "email" as const, source: "smtp" as const, sender: "s", recipient: "r", subject: id,
+    textBody: id, htmlBody: "", rawData: "", detections: [], createdAt,
+  });
+  const webhook = (id: string, createdAt: number) => ({
+    id, type: "webhook" as const, source: "http" as const, sender: "agent", recipient: "/hook", subject: id,
+    textBody: id, htmlBody: "", rawData: "{\"headers\":{}}", detections: [], createdAt,
+  });
+  store.forLocalSmtpCapture().insert(email("email-new", 5_000));
+  store.forLocalWebhookCapture().insert(webhook("webhook-new", 4_000));
+  store.forLocalSmtpCapture().insert(email("email-old", 3_000));
+  store.forLocalWebhookCapture().insert(webhook("webhook-old", 2_000));
+  const { middleware } = fixture({ store });
+
+  const emailPage = await request(middleware, { url: "/__devcaught/local-inbox/messages?channel=email&limit=1" });
+  const emailBody = JSON.parse(emailPage.body) as { items: Array<{ id: string }>; hasMore: boolean };
+  assert.deepEqual(emailBody.items.map(item => item.id), ["email-new"]);
+  assert.equal(emailBody.hasMore, true);
+
+  const firstWebhook = await request(middleware, { url: "/__devcaught/local-inbox/messages?channel=webhook&limit=1" });
+  const webhookBody = JSON.parse(firstWebhook.body) as { items: Array<{ id: string }>; hasMore: boolean; nextCursor: string };
+  assert.deepEqual(webhookBody.items.map(item => item.id), ["webhook-new"]);
+  assert.equal(webhookBody.hasMore, true);
+  const secondWebhook = await request(middleware, { url: `/__devcaught/local-inbox/messages?channel=webhook&limit=1&cursor=${webhookBody.nextCursor}` });
+  assert.deepEqual((JSON.parse(secondWebhook.body) as { items: Array<{ id: string }> }).items.map(item => item.id), ["webhook-old"]);
+
+  const searched = await request(middleware, { url: "/__devcaught/local-inbox/messages?channel=webhook&query=webhook-old" });
+  assert.deepEqual((JSON.parse(searched.body) as { items: Array<{ id: string }> }).items.map(item => item.id), ["webhook-old"]);
+  const hiddenMetadataSearch = await request(middleware, { url: "/__devcaught/local-inbox/messages?channel=webhook&query=%2Fhook" });
+  assert.deepEqual((JSON.parse(hiddenMetadataSearch.body) as { items: Array<{ id: string }> }).items, []);
+  assert.equal((await request(middleware, { url: "/__devcaught/local-inbox/messages?channel=private" })).status, 400);
+});
+
+test("rejects invalid webhook bodies, methods, Host/Origin and forwarded headers", async t => {
+  const { store } = openInboxStore(":memory:");
+  t.after(() => store.close());
+  const { middleware } = fixture({ store });
+  const path = "/__devcaught/local-inbox/webhooks";
+  const valid = {
+    url: path, method: "POST", origin: "http://127.0.0.1:8080", fetchSite: "same-origin",
+    contentType: "application/json", body: "{}",
+  };
+  for (const method of ["GET", "PUT", "PATCH", "DELETE", "OPTIONS"]) {
+    assert.equal((await request(middleware, { ...valid, method })).status, 405, method);
+  }
+  for (const options of [
+    { ...valid, body: "{" },
+    { ...valid, contentType: "text/plain" },
+    { ...valid, contentType: "application/json; charset=iso-8859-1" },
+    { ...valid, contentEncoding: "gzip" },
+    { ...valid, body: [new Uint8Array([0x7b, 0x22, 0x78, 0x22, 0x3a, 0xff, 0x7d])] },
+  ]) assert.ok([400, 415].includes((await request(middleware, options)).status));
+
+  const oversizeChunks = [new Uint8Array(600_000), new Uint8Array(448_577)];
+  assert.equal((await request(middleware, { ...valid, body: oversizeChunks })).status, 413, "chunked body cap is enforced");
+  assert.equal((await request(middleware, { ...valid, contentLength: "1048577", body: "{}" })).status, 413);
+  for (const hostile of [
+    { host: "attacker.example:8080" },
+    { origin: "http://localhost:8080" },
+    { forwardedHost: "127.0.0.1:8080" },
+    { forwardedProto: "https" },
+    { forwardedFor: "127.0.0.1" },
+    { remoteAddress: "203.0.113.9" },
+    { fetchSite: "cross-site" },
+  ]) assert.equal((await request(middleware, { ...valid, ...hostile })).status, 403, JSON.stringify(hostile));
+  assert.equal(store.count(), 0, "rejected requests persist nothing");
 });
 
 test("rejects malformed listing parameters, IDs, methods, and oversized requests", async t => {

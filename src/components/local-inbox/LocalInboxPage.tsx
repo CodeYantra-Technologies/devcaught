@@ -1,5 +1,6 @@
-import { Inbox, RefreshCw, Search } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Inbox, RefreshCw, Search, Webhook } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { LocalInboxBody } from "./LocalInboxBody";
 import {
   checkLocalInboxHealth,
   fetchLocalInboxMessage,
@@ -24,11 +25,26 @@ function isoTimestamp(value: number): string | undefined {
   return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
 }
 
+function emptyTitle(channel: "all" | "email" | "webhook", query: string): string {
+  if (query) return channel === "all" ? "No matching messages" : `No matching ${channel === "email" ? "email" : "webhook"} captures`;
+  if (channel === "email") return "No local email captures";
+  if (channel === "webhook") return "No local webhook captures";
+  return "Your local inbox is empty";
+}
+
+function emptyDescription(channel: "all" | "email" | "webhook", query: string): string {
+  if (query) return "Try a different search or choose another channel.";
+  if (channel === "email") return "Send a test message to the local SMTP listener to see it here.";
+  if (channel === "webhook") return "POST a JSON payload to the loopback local webhook endpoint to see it here.";
+  return "Send a test email or POST a JSON webhook to a local listener to see it here.";
+}
+
 export function LocalInboxPage() {
   const [serviceReady, setServiceReady] = useState<boolean | null>(null);
   const [healthVersion, setHealthVersion] = useState(0);
   const [search, setSearch] = useState("");
   const [query, setQuery] = useState("");
+  const [channel, setChannel] = useState<"all" | "email" | "webhook">("all");
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [messages, setMessages] = useState<LocalInboxSummary[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -40,6 +56,7 @@ export function LocalInboxPage() {
   const [detail, setDetail] = useState<LocalInboxMessage | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
+  const moreControllerRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -59,6 +76,9 @@ export function LocalInboxPage() {
 
   useEffect(() => {
     if (serviceReady !== true) return;
+    moreControllerRef.current?.abort();
+    moreControllerRef.current = null;
+    setMoreLoading(false);
     const controller = new AbortController();
     setListLoading(true);
     setListError(null);
@@ -67,7 +87,7 @@ export function LocalInboxPage() {
     setHasMore(false);
     setSelectedId(null);
     setDetail(null);
-    void fetchLocalInboxPage({ query, signal: controller.signal }).then(page => {
+    void fetchLocalInboxPage({ query, channel, signal: controller.signal }).then(page => {
       setMessages(page.items);
       setNextCursor(page.nextCursor);
       setHasMore(page.hasMore);
@@ -81,8 +101,11 @@ export function LocalInboxPage() {
     }).finally(() => {
       if (!controller.signal.aborted) setListLoading(false);
     });
-    return () => controller.abort();
-  }, [query, refreshVersion, serviceReady]);
+    return () => {
+      controller.abort();
+      moreControllerRef.current?.abort();
+    };
+  }, [query, channel, refreshVersion, serviceReady]);
 
   useEffect(() => {
     if (!selectedId) {
@@ -105,17 +128,24 @@ export function LocalInboxPage() {
 
   async function loadMore() {
     if (!nextCursor || moreLoading) return;
+    const controller = new AbortController();
+    moreControllerRef.current = controller;
     setMoreLoading(true);
     setListError(null);
     try {
-      const page = await fetchLocalInboxPage({ limit: 20, cursor: nextCursor, query });
+      const page = await fetchLocalInboxPage({ limit: 20, cursor: nextCursor, query, channel, signal: controller.signal });
+      if (controller.signal.aborted) return;
       setMessages(current => [...current, ...page.items]);
       setNextCursor(page.nextCursor);
       setHasMore(page.hasMore);
     } catch (error) {
+      if (controller.signal.aborted) return;
       setListError(error instanceof Error ? error.message : "Could not load more messages.");
     } finally {
-      setMoreLoading(false);
+      if (moreControllerRef.current === controller) {
+        moreControllerRef.current = null;
+        setMoreLoading(false);
+      }
     }
   }
 
@@ -136,7 +166,7 @@ export function LocalInboxPage() {
             </div>
             <div>
               <p className="text-xs font-medium uppercase tracking-[0.16em] text-subtle">DevCaught</p>
-              <h1 className="font-display text-xl font-semibold tracking-tight">Local SMTP inbox</h1>
+              <h1 className="font-display text-xl font-semibold tracking-tight">Local inbox</h1>
             </div>
           </div>
           <div className="flex items-center gap-3">
@@ -150,8 +180,8 @@ export function LocalInboxPage() {
       <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:py-8">
         <section className="mb-6 flex flex-wrap items-end justify-between gap-4">
           <div>
-            <p className="text-sm text-muted">Messages captured by the loopback SMTP listener.</p>
-            <p className="mt-1 text-xs text-subtle">This view contains local SMTP captures only.</p>
+            <p className="text-sm text-muted">Messages captured by the local SMTP listener and loopback webhook ingress.</p>
+            <p className="mt-1 text-xs text-subtle">Local captures only. Webhook payloads are generic and are not payment verified.</p>
           </div>
           <button
             type="button"
@@ -165,10 +195,10 @@ export function LocalInboxPage() {
         </section>
 
         {serviceReady === null ? (
-          <div role="status" className="rounded-xl border border-border bg-surface p-6 text-sm text-muted">Checking local SMTP service…</div>
+          <div role="status" className="rounded-xl border border-border bg-surface p-6 text-sm text-muted">Checking local capture service…</div>
         ) : serviceReady === false ? (
           <div role="alert" className="rounded-xl border border-danger/30 bg-surface p-6">
-            <h2 className="font-medium text-foreground">Local SMTP service unavailable</h2>
+            <h2 className="font-medium text-foreground">Local capture service unavailable</h2>
             <p className="mt-2 text-sm text-muted">Start DevCaught in its supported loopback local-capture mode, then try again.</p>
             {listError ? <p className="mt-2 text-sm text-danger">{listError}</p> : null}
             <button type="button" onClick={refresh} className="mt-4 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-accent-foreground">Retry</button>
@@ -187,6 +217,24 @@ export function LocalInboxPage() {
               />
             </label>
 
+            <div className="mb-4 flex flex-wrap items-center gap-2" role="group" aria-label="Filter by channel">
+              {([
+                ["all", "All"],
+                ["email", "Email"],
+                ["webhook", "Webhooks"],
+              ] as const).map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  aria-pressed={channel === value}
+                  onClick={() => setChannel(value)}
+                  className={`rounded-lg border px-3 py-2 text-sm ${channel === value ? "border-otp-border bg-otp-bg text-otp" : "border-border bg-surface text-muted hover:bg-surface-2 hover:text-foreground"}`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
             {listError ? <p role="alert" className="mb-4 rounded-lg border border-danger/30 bg-surface px-4 py-3 text-sm text-danger">{listError}</p> : null}
 
             <div className="grid min-h-[60vh] gap-4 lg:grid-cols-[minmax(18rem,0.9fr)_minmax(0,1.4fr)]">
@@ -200,8 +248,8 @@ export function LocalInboxPage() {
                 ) : messages.length === 0 ? (
                   <div className="p-6 text-center">
                     <Inbox className="mx-auto size-7 text-subtle" aria-hidden="true" />
-                    <p className="mt-3 text-sm font-medium">{query ? "No matching messages" : "Your local inbox is empty"}</p>
-                    <p className="mt-1 text-xs text-muted">Send a test message to the local SMTP listener to see it here.</p>
+                    <p className="mt-3 text-sm font-medium">{emptyTitle(channel, query)}</p>
+                    <p className="mt-1 text-xs text-muted">{emptyDescription(channel, query)}</p>
                   </div>
                 ) : (
                   <ul className="max-h-[65vh] divide-y divide-border overflow-y-auto">
@@ -214,11 +262,14 @@ export function LocalInboxPage() {
                           className={`w-full px-4 py-4 text-left transition-colors hover:bg-surface-2 ${selectedId === message.id ? "bg-surface-2" : ""}`}
                         >
                           <span className="flex items-start justify-between gap-3">
-                            <span className="truncate text-sm font-medium">{message.sender || "Unknown sender"}</span>
+                            <span className="flex min-w-0 items-center gap-2 truncate text-sm font-medium">
+                              {message.type === "webhook" ? <Webhook className="size-4 shrink-0 text-otp" aria-hidden="true" /> : <Inbox className="size-4 shrink-0 text-subtle" aria-hidden="true" />}
+                              {message.type === "webhook" ? <span className="truncate">{message.method} · Webhook</span> : <span className="truncate">{message.sender || "Unknown sender"}</span>}
+                            </span>
                             <time className="shrink-0 text-[11px] text-subtle" dateTime={isoTimestamp(message.createdAt)}>{formatTimestamp(message.createdAt)}</time>
                           </span>
                           <span className="mt-1 block truncate text-sm text-foreground">{message.subject || "(No subject)"}</span>
-                          <span className="mt-1 block truncate text-xs text-muted">To: {message.recipient || "Unknown recipient"}</span>
+                          {message.type === "email" ? <span className="mt-1 block truncate text-xs text-muted">To: {message.recipient || "Unknown recipient"}</span> : null}
                         </button>
                       </li>
                     ))}
@@ -241,12 +292,18 @@ export function LocalInboxPage() {
                 ) : detail ? (
                   <article className="h-full overflow-y-auto">
                     <header className="border-b border-border px-5 py-5">
-                      <p className="break-all text-xs text-muted">From: {detail.sender || "Unknown sender"}</p>
-                      <p className="mt-1 break-all text-xs text-muted">To: {detail.recipient || "Unknown recipient"}</p>
+                      {detail.type === "email" ? (
+                        <>
+                          <p className="break-all text-xs text-muted">From: {detail.sender || "Unknown sender"}</p>
+                          <p className="mt-1 break-all text-xs text-muted">To: {detail.recipient || "Unknown recipient"}</p>
+                        </>
+                      ) : (
+                        <p className="flex items-center gap-2 text-xs font-medium text-otp"><Webhook className="size-4" aria-hidden="true" />{detail.method} · Local webhook</p>
+                      )}
                       <h2 className="mt-4 break-words text-xl font-semibold">{detail.subject || "(No subject)"}</h2>
                       <time className="mt-2 block text-xs text-subtle" dateTime={isoTimestamp(detail.createdAt)}>{formatTimestamp(detail.createdAt)}</time>
                     </header>
-                    <pre className="whitespace-pre-wrap break-words px-5 py-5 font-mono text-sm leading-6 text-foreground">{detail.textBody || "(This message has no plain-text body.)"}</pre>
+                    <LocalInboxBody message={detail} />
                   </article>
                 ) : (
                   <div className="flex h-full min-h-[24rem] items-center justify-center p-8 text-center">

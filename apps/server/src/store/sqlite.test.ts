@@ -108,13 +108,41 @@ describe("local capture storage view", () => {
       assert.throws(() => trusted.insert({ ...base, capture_origin: "local_smtp" } as never), /assigned only by trusted ingestion/);
       assert.throws(() => trusted.insertSms({ ...base, type: "sms", dedupeKey: null } as never), /does not accept SMS/);
 
-      for (const assignment of ["captureOrigin", "capture_origin"] as const) {
-        assert.throws(() => store.insert({ ...base, [assignment]: "local_smtp" } as never), /assigned only by trusted ingestion/);
-        assert.throws(() => store.insertSms({ ...base, type: "sms", dedupeKey: null, [assignment]: "local_smtp" } as never), /assigned only by trusted ingestion/);
-        assert.throws(() => store.forInbox("private-inbox-a").insert({ ...base, [assignment]: "local_smtp" } as never), /assigned only by trusted ingestion/);
-        assert.throws(() => store.forInbox("private-inbox-a").insertSms({ ...base, type: "sms", dedupeKey: null, [assignment]: "local_smtp" } as never), /assigned only by trusted ingestion/);
+      for (const origin of ["local_smtp", "local_webhook"] as const) {
+        for (const assignment of ["captureOrigin", "capture_origin"] as const) {
+          assert.throws(() => store.insert({ ...base, [assignment]: origin } as never), /assigned only by trusted ingestion/);
+          assert.throws(() => store.insertSms({ ...base, type: "sms", dedupeKey: null, [assignment]: origin } as never), /assigned only by trusted ingestion/);
+          assert.throws(() => store.forInbox("private-inbox-a").insert({ ...base, [assignment]: origin } as never), /assigned only by trusted ingestion/);
+          assert.throws(() => store.forInbox("private-inbox-a").insertSms({ ...base, type: "sms", dedupeKey: null, [assignment]: origin } as never), /assigned only by trusted ingestion/);
+        }
       }
       assert.equal(store.count(), 0);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("assigns local webhook provenance only through its dedicated webhook writer", () => {
+    const { store } = openInboxStore(":memory:");
+    try {
+      const webhook = store.forLocalWebhookCapture();
+      const base = {
+        type: "webhook" as const, source: "http" as const, sender: "agent", recipient: "/local",
+        subject: "POST /local", textBody: "{}", htmlBody: "", rawData: "{\"headers\":{}}",
+        detections: [], createdAt: 1,
+      };
+      const inserted = webhook.insert(base);
+      assert.equal(inserted.type, "webhook");
+      const row = store.getRaw(inserted.id);
+      assert.equal(row, base.rawData);
+      assert.equal(store.forLocalCapture().listPage({ limit: 10 }).items[0]?.id, inserted.id);
+      assert.equal(store.forLocalCapture().getLocalCapture(inserted.id)?.textBody, "{}");
+      assert.equal(store.forLocalCapture().getLocalSmtp(inserted.id), null);
+      assert.throws(() => webhook.insert({ ...base, type: "email", source: "smtp" } as never), /only HTTP webhook/);
+      assert.throws(() => webhook.insert({ ...base, captureOrigin: "local_webhook" } as never), /assigned only by trusted ingestion/);
+      assert.throws(() => webhook.insert({ ...base, capture_origin: "local_webhook" } as never), /assigned only by trusted ingestion/);
+      assert.throws(() => webhook.insert({ ...base, inboxId: "private-a" } as never), /cannot specify an inbox assignment/);
+      assert.equal(store.count(), 1);
     } finally {
       store.close();
     }
@@ -422,6 +450,128 @@ describe("SMS storage", () => {
       ...overrides,
     };
   }
+
+  const OLD_PROVENANCE_SCHEMA = `
+    CREATE TABLE messages (
+      id TEXT PRIMARY KEY, type TEXT NOT NULL, source TEXT NOT NULL, sender TEXT,
+      recipient TEXT, subject TEXT, text_body TEXT, html_body TEXT, raw_data TEXT,
+      detections TEXT NOT NULL DEFAULT '[]', created_at INTEGER NOT NULL,
+      dedupe_key TEXT, inbox_id TEXT,
+      capture_origin TEXT CHECK (capture_origin IS NULL OR
+        (capture_origin = 'local_smtp' AND type = 'email' AND source = 'smtp' AND inbox_id IS NULL))
+    );
+    CREATE INDEX idx_messages_created_at ON messages(created_at DESC);
+    CREATE UNIQUE INDEX idx_messages_dedupe_key ON messages(dedupe_key)
+      WHERE dedupe_key IS NOT NULL AND inbox_id IS NULL;
+    CREATE UNIQUE INDEX idx_messages_inbox_dedupe_key ON messages(inbox_id, dedupe_key)
+      WHERE dedupe_key IS NOT NULL AND inbox_id IS NOT NULL;
+  `;
+
+  it("upgrades the old provenance CHECK without changing rows, associations, or indexes", () => {
+    const db = new DatabaseSync(":memory:");
+    try {
+      db.exec(OLD_PROVENANCE_SCHEMA);
+      db.exec("CREATE INDEX idx_messages_subject ON messages(subject)");
+      const insert = db.prepare(`INSERT INTO messages
+        (id, type, source, sender, recipient, subject, text_body, html_body, raw_data,
+         detections, created_at, dedupe_key, inbox_id, capture_origin)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      insert.run("smtp-trusted", "email", "smtp", "s", "r", "trusted", "text", "html", "raw", "[]", 10, null, null, "local_smtp");
+      insert.run("legacy-null", "webhook", "http", "s", "r", "legacy", "payload", null, "raw", "[]", 11, null, null, null);
+      insert.run("private-null", "email", "smtp", "s", "r", "private", "text", null, "raw", "[]", 12, null, "private-a", null);
+
+      migrateInboxStore(db);
+      const rows = db.prepare(`SELECT id, type, source, sender, recipient, subject, text_body,
+        html_body, raw_data, detections, created_at, dedupe_key, inbox_id, capture_origin
+        FROM messages ORDER BY id`).all();
+      assert.equal(rows.length, 3);
+      assert.equal((rows[0] as { capture_origin: string | null }).capture_origin, null);
+      assert.equal((rows[1] as { inbox_id: string | null }).inbox_id, "private-a");
+      assert.equal((rows[2] as { capture_origin: string | null }).capture_origin, "local_smtp");
+      assert.deepEqual(
+        (db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='messages' AND sql IS NOT NULL ORDER BY name").all() as {name:string}[]).map(x => x.name),
+        ["idx_messages_created_at", "idx_messages_dedupe_key", "idx_messages_inbox_dedupe_key", "idx_messages_subject"],
+      );
+      db.prepare(`INSERT INTO messages (id,type,source,detections,created_at,capture_origin)
+        VALUES ('local-hook','webhook','http','[]',13,'local_webhook')`).run();
+      for (const [id, type, source, inbox] of [
+        ["bad-type", "email", "http", null],
+        ["bad-source", "webhook", "smtp", null],
+        ["bad-inbox", "webhook", "http", "private-a"],
+      ]) {
+        assert.throws(() => db.prepare(`INSERT INTO messages
+          (id,type,source,detections,created_at,inbox_id,capture_origin) VALUES (?,?,?,'[]',14,?,'local_webhook')`)
+          .run(id, type, source, inbox), /CHECK constraint failed/i);
+      }
+      assert.throws(() => db.prepare(`INSERT INTO messages
+        (id,type,source,detections,created_at,capture_origin) VALUES ('bad-smtp','webhook','http','[]',15,'local_smtp')`).run(), /CHECK constraint failed/i);
+      assert.throws(() => db.prepare(`INSERT INTO messages
+        (id,type,source,detections,created_at,capture_origin) VALUES ('bad-forgery','email','smtp','[]',16,'forged')`).run(), /CHECK constraint failed/i);
+      assert.equal((db.prepare("PRAGMA user_version").get() as {user_version:number}).user_version, 1);
+      migrateInboxStore(db);
+      assert.equal((db.prepare("SELECT COUNT(*) AS n FROM messages").get() as {n:number}).n, 4);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("produces equivalent fresh and upgraded message schemas", () => {
+    const fresh = new DatabaseSync(":memory:");
+    const upgraded = new DatabaseSync(":memory:");
+    try {
+      upgraded.exec(OLD_PROVENANCE_SCHEMA);
+      migrateInboxStore(fresh);
+      migrateInboxStore(upgraded);
+      const schema = (db: DatabaseSync) => ({
+        table: (db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='messages'").get() as {sql:string}).sql.replace('CREATE TABLE "messages"', "CREATE TABLE messages").replace(/\s+/g, " ").trim(),
+        columns: db.prepare("PRAGMA table_info(messages)").all(),
+        indexes: (db.prepare("SELECT name, sql FROM sqlite_master WHERE type='index' AND tbl_name='messages' AND sql IS NOT NULL ORDER BY name").all() as {name:string; sql:string}[]).map(x => ({ name: x.name, sql: x.sql.replace(/\s+/g, " ").trim() })),
+      });
+      assert.deepEqual(schema(upgraded), schema(fresh));
+      assert.equal((upgraded.prepare("PRAGMA user_version").get() as {user_version:number}).user_version, 1);
+    } finally {
+      fresh.close();
+      upgraded.close();
+    }
+  });
+
+  it("accepts trusted local webhook writes after upgrading a disposable old-schema database", () => {
+    const dir = mkdtempSync(join(tmpdir(), "devcaught-webhook-upgrade-"));
+    const dbPath = join(dir, "upgrade.sqlite");
+    const legacy = new DatabaseSync(dbPath);
+    legacy.exec(OLD_PROVENANCE_SCHEMA);
+    legacy.prepare(`INSERT INTO messages (id,type,source,detections,created_at)
+      VALUES ('legacy-root-hook','webhook','http','[]',1)`).run();
+    legacy.close();
+    const { store } = openInboxStore(dbPath);
+    try {
+      const saved = store.forLocalWebhookCapture().insert({
+        type: "webhook", source: "http", sender: "local", recipient: "/webhook",
+        subject: "POST /webhook", textBody: "{\n  \"event\": \"new\"\n}", htmlBody: "",
+        rawData: "{\"headers\":{}}", detections: [], createdAt: 2,
+      });
+      const page = store.forLocalCapture().listPage({ limit: 10 });
+      assert.deepEqual(page.items.map(item => item.id), [saved.id]);
+      assert.equal(store.forLocalCapture().getLocalCapture("legacy-root-hook"), null);
+      assert.equal(store.get("legacy-root-hook")?.subject, null, "legacy row remains preserved but untrusted");
+    } finally {
+      store.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a future schema marker without changing the database", () => {
+    const db = new DatabaseSync(":memory:");
+    try {
+      db.exec(OLD_PROVENANCE_SCHEMA);
+      db.exec("PRAGMA user_version = 2");
+      assert.throws(() => migrateInboxStore(db), /Unsupported inbox schema version/);
+      assert.equal((db.prepare("PRAGMA user_version").get() as {user_version:number}).user_version, 2);
+      assert.equal((db.prepare("PRAGMA table_info(messages)").all() as {name:string}[]).some(c => c.name === "dedupe_key"), true);
+    } finally {
+      db.close();
+    }
+  });
 
   it("migrates a legacy database (pre-dedupe_key) without losing rows", () => {
     const dir = mkdtempSync(join(tmpdir(), "devcaught-migrate-"));

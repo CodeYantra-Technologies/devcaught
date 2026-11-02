@@ -1,18 +1,37 @@
-export interface LocalInboxSummary {
+export type LocalInboxChannel = "all" | "email" | "webhook";
+
+interface LocalInboxSummaryBase {
   id: string;
-  type: "email";
-  source: "smtp";
-  sender: string;
-  recipient: string;
   subject: string | null;
   createdAt: number;
   hasHtml: boolean;
   hasText: boolean;
 }
 
-export interface LocalInboxMessage extends LocalInboxSummary {
+export interface LocalEmailSummary extends LocalInboxSummaryBase {
+  type: "email";
+  source: "smtp";
+  sender: string;
+  recipient: string;
+}
+
+export interface LocalWebhookSummary extends LocalInboxSummaryBase {
+  type: "webhook";
+  source: "http";
+  method: "POST";
+}
+
+export type LocalInboxSummary = LocalEmailSummary | LocalWebhookSummary;
+
+export interface LocalEmailMessage extends LocalEmailSummary {
   textBody: string;
 }
+
+export interface LocalWebhookMessage extends LocalWebhookSummary {
+  textBody: string;
+}
+
+export type LocalInboxMessage = LocalEmailMessage | LocalWebhookMessage;
 
 export interface LocalInboxPage {
   items: LocalInboxSummary[];
@@ -49,7 +68,7 @@ async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
     const message = response.status === 404
       ? "This local capture is no longer available."
       : response.status === 503
-        ? "Local SMTP capture is unavailable. Check that the local SMTP service is running."
+        ? "Local capture service is unavailable. Check that DevCaught is running in local mode."
         : "The local inbox request could not be completed.";
     throw new LocalInboxApiError(message, response.status);
   }
@@ -64,18 +83,41 @@ async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
 export async function checkLocalInboxHealth(signal?: AbortSignal): Promise<void> {
   const body = await getJson<{ ok?: unknown; mode?: unknown }>("/__devcaught/local-inbox/health", signal);
   if (body.ok !== true || body.mode !== "local-capture") {
-    throw new LocalInboxApiError("Local SMTP capture is unavailable.", 503);
+    throw new LocalInboxApiError("Local capture service is unavailable.", 503);
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasCommonSummary(value: Record<string, unknown>): boolean {
+  return typeof value.id === "string" && (typeof value.subject === "string" || value.subject === null) &&
+    typeof value.createdAt === "number" && Number.isFinite(value.createdAt) &&
+    typeof value.hasHtml === "boolean" && typeof value.hasText === "boolean";
+}
+
+function isLocalInboxSummary(value: unknown): value is LocalInboxSummary {
+  if (!isRecord(value) || !hasCommonSummary(value)) return false;
+  if (value.type === "email") return value.source === "smtp" && typeof value.sender === "string" && typeof value.recipient === "string";
+  if (value.type === "webhook") return value.source === "http" && value.method === "POST";
+  return false;
+}
+
+function isLocalInboxMessage(value: unknown): value is LocalInboxMessage {
+  return isLocalInboxSummary(value) && isRecord(value) && typeof value.textBody === "string";
 }
 
 export async function fetchLocalInboxPage(options: {
   limit?: number;
   cursor?: string;
   query?: string;
+  channel?: LocalInboxChannel;
   signal?: AbortSignal;
 } = {}): Promise<LocalInboxPage> {
   const params = new URLSearchParams();
   params.set("limit", String(options.limit ?? 20));
+  params.set("channel", options.channel ?? "all");
   if (options.cursor) params.set("cursor", options.cursor);
   if (options.query?.trim()) params.set("query", options.query.trim());
   const body = await getJson<Partial<LocalInboxPage> & { ok?: unknown }>(
@@ -83,7 +125,7 @@ export async function fetchLocalInboxPage(options: {
     options.signal,
   );
   if (
-    body.ok !== true || !Array.isArray(body.items) || typeof body.hasMore !== "boolean" ||
+    body.ok !== true || !Array.isArray(body.items) || !body.items.every(isLocalInboxSummary) || typeof body.hasMore !== "boolean" ||
     !(typeof body.nextCursor === "string" || body.nextCursor === null)
   ) {
     throw new LocalInboxApiError("The local inbox returned an invalid response.", 502);
@@ -96,7 +138,7 @@ export async function fetchLocalInboxMessage(id: string, signal?: AbortSignal): 
     `/__devcaught/local-inbox/messages/${encodeURIComponent(id)}`,
     signal,
   );
-  if (body.ok !== true || !body.message || typeof body.message.textBody !== "string") {
+  if (body.ok !== true || !isLocalInboxMessage(body.message)) {
     throw new LocalInboxApiError("The local inbox returned an invalid response.", 502);
   }
   return body.message;

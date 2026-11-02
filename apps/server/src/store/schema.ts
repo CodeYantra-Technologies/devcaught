@@ -1,3 +1,26 @@
+export const MESSAGE_TABLE_SCHEMA = `
+CREATE TABLE messages (
+  id TEXT PRIMARY KEY,
+  type TEXT NOT NULL,
+  source TEXT NOT NULL,
+  sender TEXT,
+  recipient TEXT,
+  subject TEXT,
+  text_body TEXT,
+  html_body TEXT,
+  raw_data TEXT,
+  detections TEXT NOT NULL DEFAULT '[]',
+  created_at INTEGER NOT NULL,
+  dedupe_key TEXT,
+  inbox_id TEXT,
+  capture_origin TEXT CHECK (
+    capture_origin IS NULL OR
+    (capture_origin = 'local_smtp' AND type = 'email' AND source = 'smtp' AND inbox_id IS NULL) OR
+    (capture_origin = 'local_webhook' AND type = 'webhook' AND source = 'http' AND inbox_id IS NULL)
+  )
+);
+`;
+
 export const MESSAGE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS messages (
   id TEXT PRIMARY KEY,
@@ -11,11 +34,12 @@ CREATE TABLE IF NOT EXISTS messages (
   raw_data TEXT,
   detections TEXT NOT NULL DEFAULT '[]',
   created_at INTEGER NOT NULL,
+  dedupe_key TEXT,
   inbox_id TEXT,
   capture_origin TEXT CHECK (
-    capture_origin IS NULL OR (
-      capture_origin = 'local_smtp' AND type = 'email' AND source = 'smtp' AND inbox_id IS NULL
-    )
+    capture_origin IS NULL OR
+    (capture_origin = 'local_smtp' AND type = 'email' AND source = 'smtp' AND inbox_id IS NULL) OR
+    (capture_origin = 'local_webhook' AND type = 'webhook' AND source = 'http' AND inbox_id IS NULL)
   )
 );
 
@@ -37,14 +61,4 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_dedupe_key
 CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_inbox_dedupe_key
   ON messages(inbox_id, dedupe_key)
   WHERE dedupe_key IS NOT NULL AND inbox_id IS NOT NULL;
-`;
-
-/** Nullable provenance marker for trusted local SMTP captures. */
-export const MIGRATION_LOCAL_SMTP_PROVENANCE = `
-ALTER TABLE messages ADD COLUMN capture_origin TEXT
-  CHECK (
-    capture_origin IS NULL OR (
-      capture_origin = 'local_smtp' AND type = 'email' AND source = 'smtp' AND inbox_id IS NULL
-    )
-  );
 `;
