@@ -16,7 +16,8 @@ CREATE TABLE messages (
   capture_origin TEXT CHECK (
     capture_origin IS NULL OR
     (capture_origin = 'local_smtp' AND type = 'email' AND source = 'smtp' AND inbox_id IS NULL) OR
-    (capture_origin = 'local_webhook' AND type = 'webhook' AND source = 'http' AND inbox_id IS NULL)
+    (capture_origin = 'local_webhook' AND type = 'webhook' AND source = 'http' AND inbox_id IS NULL) OR
+    (capture_origin = 'local_sms' AND type = 'sms' AND source = 'simulated' AND inbox_id IS NULL)
   )
 );
 `;
@@ -39,7 +40,8 @@ CREATE TABLE IF NOT EXISTS messages (
   capture_origin TEXT CHECK (
     capture_origin IS NULL OR
     (capture_origin = 'local_smtp' AND type = 'email' AND source = 'smtp' AND inbox_id IS NULL) OR
-    (capture_origin = 'local_webhook' AND type = 'webhook' AND source = 'http' AND inbox_id IS NULL)
+    (capture_origin = 'local_webhook' AND type = 'webhook' AND source = 'http' AND inbox_id IS NULL) OR
+    (capture_origin = 'local_sms' AND type = 'sms' AND source = 'simulated' AND inbox_id IS NULL)
   )
 );
 

@@ -480,6 +480,97 @@ test("captures bounded JSON webhooks and exposes only trusted normalized fields"
   assert.equal(store.forLocalCapture().getLocalCapture(id)?.type, "webhook");
 });
 
+test("captures only validated local synthetic SMS and returns allowlisted trusted data", async t => {
+  const { store } = openInboxStore(":memory:");
+  t.after(() => store.close());
+  store.insertSms({
+    type: "sms", source: "http", sender: "+14155550000", recipient: "+14155559999",
+    subject: "untrusted SMS", textBody: "untrusted", htmlBody: "", rawData: "{}", detections: [],
+    createdAt: 3_000, dedupeKey: null,
+  });
+  store.forInbox("private-a").insertSms({
+    type: "sms", source: "http", sender: "+14155550001", recipient: "+14155559998",
+    subject: "private SMS", textBody: "private", htmlBody: "", rawData: "{}", detections: [],
+    createdAt: 4_000, dedupeKey: null,
+  });
+  const { middleware } = fixture({ store });
+  const accepted = await request(middleware, {
+    url: "/__devcaught/local-inbox/sms", method: "POST",
+    origin: "http://127.0.0.1:8080", fetchSite: "same-origin",
+    contentType: "application/json",
+    body: JSON.stringify({ sender: "+14155550123", recipient: "+14155550199", text: "<script>inert SMS text</script>" }),
+  });
+  assert.equal(accepted.status, 201);
+  assert.equal(accepted.headers["cache-control"], "no-store");
+  assert.equal(accepted.headers["x-content-type-options"], "nosniff");
+  const id = (JSON.parse(accepted.body) as { id: string }).id;
+  const all = await request(middleware, { url: "/__devcaught/local-inbox/messages?channel=all" });
+  const allItems = (JSON.parse(all.body) as { items: Array<Record<string, unknown>> }).items;
+  assert.deepEqual(allItems.map(item => item.id), [id]);
+  const summary = allItems[0]!;
+  assert.equal(summary.type, "sms");
+  assert.equal(summary.source, "simulated");
+  assert.equal(summary.provider, "simulated");
+  assert.equal(summary.verification, "local");
+  assert.equal(summary.sender, "+*******0123");
+  assert.equal(summary.recipient, "+*******0199");
+  assert.equal(summary.body, "<script>inert SMS text</script>");
+  assert.deepEqual(Object.keys(summary).sort(), [
+    "body", "createdAt", "hasHtml", "hasText", "id", "provider", "recipient", "sender", "source", "subject", "type", "verification",
+  ]);
+  assert.ok(!all.body.includes("+14155550123"));
+  assert.ok(!all.body.includes("private SMS"));
+  assert.ok(!all.body.includes("untrusted SMS"));
+
+  const filtered = await request(middleware, { url: "/__devcaught/local-inbox/messages?channel=sms&query=inert" });
+  assert.deepEqual((JSON.parse(filtered.body) as { items: Array<{ id: string }> }).items.map(item => item.id), [id]);
+  const detailResponse = await request(middleware, { url: `/__devcaught/local-inbox/messages/${id}` });
+  assert.equal(detailResponse.status, 200);
+  const detail = (JSON.parse(detailResponse.body) as { message: Record<string, unknown> }).message;
+  assert.equal(detail.body, "<script>inert SMS text</script>");
+  assert.equal(detail.textBody, undefined);
+  assert.equal(detail.status, undefined);
+  assert.equal(detail.messageSid, undefined);
+  assert.deepEqual(Object.keys(detail).sort(), Object.keys(summary).sort());
+  assert.equal(store.forLocalCapture().getLocalCapture(id)?.sms?.verification, "local");
+});
+
+test("rejects invalid and hostile synthetic SMS requests without writes", async t => {
+  const { store } = openInboxStore(":memory:");
+  t.after(() => store.close());
+  const { middleware } = fixture({ store });
+  const path = "/__devcaught/local-inbox/sms";
+  const valid = {
+    url: path, method: "POST", origin: "http://127.0.0.1:8080", fetchSite: "same-origin",
+    contentType: "application/json", body: JSON.stringify({ sender: "+14155550123", recipient: "+14155550199", text: "hello" }),
+  };
+  for (const method of ["GET", "PUT", "PATCH", "DELETE", "OPTIONS"]) {
+    assert.equal((await request(middleware, { ...valid, method })).status, 405, method);
+  }
+  for (const invalid of [
+    { ...valid, body: "{" },
+    { ...valid, contentType: "text/plain" },
+    { ...valid, body: JSON.stringify({ sender: "", recipient: "+14155550199", text: "hello" }) },
+    { ...valid, body: JSON.stringify({ sender: "+14155550123", text: "hello" }) },
+    { ...valid, body: JSON.stringify({ sender: "555-0123", recipient: "+14155550199", text: "hello" }) },
+    { ...valid, body: JSON.stringify({ sender: "+14155550123", recipient: "+14155550199", text: "  " }) },
+    { ...valid, body: JSON.stringify({ sender: "+14155550123", recipient: "+14155550199", text: "x".repeat(1025) }) },
+    { ...valid, body: JSON.stringify({ sender: "+14155550123", recipient: "+14155550199", text: "hello", verification: "valid" }) },
+  ]) assert.ok([400, 415].includes((await request(middleware, invalid)).status));
+  assert.equal((await request(middleware, { ...valid, body: [new Uint8Array(16_385)] })).status, 413);
+  assert.equal((await request(middleware, { ...valid, contentLength: "16385", body: "{}" })).status, 413);
+  for (const hostile of [
+    { host: "attacker.example:8080" },
+    { origin: "http://localhost:8080" },
+    { forwardedHost: "127.0.0.1:8080" },
+    { forwardedProto: "https" },
+    { forwardedFor: "127.0.0.1" },
+    { remoteAddress: "203.0.113.9" },
+    { fetchSite: "cross-site" },
+  ]) assert.equal((await request(middleware, { ...valid, ...hostile })).status, 403, JSON.stringify(hostile));
+  assert.equal(store.count(), 0);
+});
+
 test("filters trusted channels before search pagination and preserves descending order", async t => {
   const { store } = openInboxStore(":memory:");
   t.after(() => store.close());
@@ -491,9 +582,20 @@ test("filters trusted channels before search pagination and preserves descending
     id, type: "webhook" as const, source: "http" as const, sender: "agent", recipient: "/hook", subject: id,
     textBody: id, htmlBody: "", rawData: "{\"headers\":{}}", detections: [], createdAt,
   });
+  const sms = (id: string, createdAt: number) => ({
+    id, type: "sms" as const, source: "simulated" as const, sender: "+*******0123", recipient: "+*******0199",
+    subject: "Synthetic SMS", textBody: id, htmlBody: "",
+    rawData: JSON.stringify({ sms: {
+      provider: "simulated", kind: "inbound", messageSid: null, from: "+*******0123", to: "+*******0199",
+      body: id, status: null, errorCode: null, numSegments: null, numMedia: null, mediaUrls: [],
+      receivedAt: createdAt, verification: "local",
+    } }), detections: [], createdAt, dedupeKey: null,
+  });
   store.forLocalSmtpCapture().insert(email("email-new", 5_000));
+  store.forLocalSmsCapture().insertSms(sms("sms-new", 4_500));
   store.forLocalWebhookCapture().insert(webhook("webhook-new", 4_000));
   store.forLocalSmtpCapture().insert(email("email-old", 3_000));
+  store.forLocalSmsCapture().insertSms(sms("sms-old", 2_500));
   store.forLocalWebhookCapture().insert(webhook("webhook-old", 2_000));
   const { middleware } = fixture({ store });
 
@@ -508,6 +610,16 @@ test("filters trusted channels before search pagination and preserves descending
   assert.equal(webhookBody.hasMore, true);
   const secondWebhook = await request(middleware, { url: `/__devcaught/local-inbox/messages?channel=webhook&limit=1&cursor=${webhookBody.nextCursor}` });
   assert.deepEqual((JSON.parse(secondWebhook.body) as { items: Array<{ id: string }> }).items.map(item => item.id), ["webhook-old"]);
+
+  const firstSms = await request(middleware, { url: "/__devcaught/local-inbox/messages?channel=sms&limit=1" });
+  const smsBody = JSON.parse(firstSms.body) as { items: Array<{ id: string; body: string }>; hasMore: boolean; nextCursor: string };
+  assert.deepEqual(smsBody.items.map(item => item.id), ["sms-new"]);
+  assert.equal(smsBody.items[0]?.body, "sms-new");
+  assert.equal(smsBody.hasMore, true);
+  const secondSms = await request(middleware, { url: `/__devcaught/local-inbox/messages?channel=sms&limit=1&cursor=${smsBody.nextCursor}` });
+  assert.deepEqual((JSON.parse(secondSms.body) as { items: Array<{ id: string }> }).items.map(item => item.id), ["sms-old"]);
+  const searchedSms = await request(middleware, { url: "/__devcaught/local-inbox/messages?channel=sms&query=sms-old" });
+  assert.deepEqual((JSON.parse(searchedSms.body) as { items: Array<{ id: string }> }).items.map(item => item.id), ["sms-old"]);
 
   const searched = await request(middleware, { url: "/__devcaught/local-inbox/messages?channel=webhook&query=webhook-old" });
   assert.deepEqual((JSON.parse(searched.body) as { items: Array<{ id: string }> }).items.map(item => item.id), ["webhook-old"]);

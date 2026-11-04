@@ -1,6 +1,7 @@
-import { Inbox, RefreshCw, Search, Webhook } from "lucide-react";
+import { Inbox, MessageSquare, RefreshCw, Search, Webhook } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { LocalInboxBody } from "./LocalInboxBody";
+import { maskPhoneSms } from "../../../packages/shared/src/sms/phone";
 import {
   checkLocalInboxHealth,
   fetchLocalInboxMessage,
@@ -25,18 +26,20 @@ function isoTimestamp(value: number): string | undefined {
   return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
 }
 
-function emptyTitle(channel: "all" | "email" | "webhook", query: string): string {
-  if (query) return channel === "all" ? "No matching messages" : `No matching ${channel === "email" ? "email" : "webhook"} captures`;
+function emptyTitle(channel: "all" | "email" | "sms" | "webhook", query: string): string {
+  if (query) return channel === "all" ? "No matching messages" : `No matching ${channel === "sms" ? "SMS" : channel} captures`;
   if (channel === "email") return "No local email captures";
+  if (channel === "sms") return "No local SMS captures";
   if (channel === "webhook") return "No local webhook captures";
   return "Your local inbox is empty";
 }
 
-function emptyDescription(channel: "all" | "email" | "webhook", query: string): string {
+function emptyDescription(channel: "all" | "email" | "sms" | "webhook", query: string): string {
   if (query) return "Try a different search or choose another channel.";
   if (channel === "email") return "Send a test message to the local SMTP listener to see it here.";
   if (channel === "webhook") return "POST a JSON payload to the loopback local webhook endpoint to see it here.";
-  return "Send a test email or POST a JSON webhook to a local listener to see it here.";
+  if (channel === "sms") return "POST a synthetic SMS to the loopback local SMS endpoint to see it here.";
+  return "Send a test email, synthetic SMS, or JSON webhook to a local listener to see it here.";
 }
 
 export function LocalInboxPage() {
@@ -44,7 +47,7 @@ export function LocalInboxPage() {
   const [healthVersion, setHealthVersion] = useState(0);
   const [search, setSearch] = useState("");
   const [query, setQuery] = useState("");
-  const [channel, setChannel] = useState<"all" | "email" | "webhook">("all");
+  const [channel, setChannel] = useState<"all" | "email" | "sms" | "webhook">("all");
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [messages, setMessages] = useState<LocalInboxSummary[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -180,7 +183,7 @@ export function LocalInboxPage() {
       <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:py-8">
         <section className="mb-6 flex flex-wrap items-end justify-between gap-4">
           <div>
-            <p className="text-sm text-muted">Messages captured by the local SMTP listener and loopback webhook ingress.</p>
+            <p className="text-sm text-muted">Messages captured by the local SMTP listener and loopback-only test ingresses.</p>
             <p className="mt-1 text-xs text-subtle">Local captures only. Webhook payloads are generic and are not payment verified.</p>
           </div>
           <button
@@ -221,6 +224,7 @@ export function LocalInboxPage() {
               {([
                 ["all", "All"],
                 ["email", "Email"],
+                ["sms", "SMS"],
                 ["webhook", "Webhooks"],
               ] as const).map(([value, label]) => (
                 <button
@@ -263,12 +267,19 @@ export function LocalInboxPage() {
                         >
                           <span className="flex items-start justify-between gap-3">
                             <span className="flex min-w-0 items-center gap-2 truncate text-sm font-medium">
-                              {message.type === "webhook" ? <Webhook className="size-4 shrink-0 text-otp" aria-hidden="true" /> : <Inbox className="size-4 shrink-0 text-subtle" aria-hidden="true" />}
-                              {message.type === "webhook" ? <span className="truncate">{message.method} · Webhook</span> : <span className="truncate">{message.sender || "Unknown sender"}</span>}
+                              {message.type === "webhook" ? <Webhook className="size-4 shrink-0 text-otp" aria-hidden="true" /> : message.type === "sms" ? <MessageSquare className="size-4 shrink-0 text-otp" aria-hidden="true" /> : <Inbox className="size-4 shrink-0 text-subtle" aria-hidden="true" />}
+                              {message.type === "webhook" ? <span className="truncate">{message.method} · Webhook</span> : message.type === "sms" ? <span className="truncate">Synthetic SMS · {maskPhoneSms(message.sender)}</span> : <span className="truncate">{message.sender || "Unknown sender"}</span>}
                             </span>
                             <time className="shrink-0 text-[11px] text-subtle" dateTime={isoTimestamp(message.createdAt)}>{formatTimestamp(message.createdAt)}</time>
                           </span>
-                          <span className="mt-1 block truncate text-sm text-foreground">{message.subject || "(No subject)"}</span>
+                          {message.type === "sms" ? (
+                            <>
+                              <span className="mt-1 block truncate text-xs text-muted">To: {maskPhoneSms(message.recipient)}</span>
+                              <span className="mt-1 block truncate text-sm text-foreground">{message.body || "(Empty message)"}</span>
+                            </>
+                          ) : (
+                            <span className="mt-1 block truncate text-sm text-foreground">{message.subject || "(No subject)"}</span>
+                          )}
                           {message.type === "email" ? <span className="mt-1 block truncate text-xs text-muted">To: {message.recipient || "Unknown recipient"}</span> : null}
                         </button>
                       </li>
@@ -296,6 +307,12 @@ export function LocalInboxPage() {
                         <>
                           <p className="break-all text-xs text-muted">From: {detail.sender || "Unknown sender"}</p>
                           <p className="mt-1 break-all text-xs text-muted">To: {detail.recipient || "Unknown recipient"}</p>
+                        </>
+                      ) : detail.type === "sms" ? (
+                        <>
+                          <p className="flex items-center gap-2 text-xs font-medium text-otp"><MessageSquare className="size-4" aria-hidden="true" />Synthetic local SMS</p>
+                          <p className="mt-2 break-all text-xs text-muted">From: {maskPhoneSms(detail.sender)}</p>
+                          <p className="mt-1 break-all text-xs text-muted">To: {maskPhoneSms(detail.recipient)}</p>
                         </>
                       ) : (
                         <p className="flex items-center gap-2 text-xs font-medium text-otp"><Webhook className="size-4" aria-hidden="true" />{detail.method} · Local webhook</p>

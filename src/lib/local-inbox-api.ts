@@ -1,4 +1,4 @@
-export type LocalInboxChannel = "all" | "email" | "webhook";
+export type LocalInboxChannel = "all" | "email" | "sms" | "webhook";
 
 interface LocalInboxSummaryBase {
   id: string;
@@ -21,7 +21,17 @@ export interface LocalWebhookSummary extends LocalInboxSummaryBase {
   method: "POST";
 }
 
-export type LocalInboxSummary = LocalEmailSummary | LocalWebhookSummary;
+export interface LocalSmsSummary extends LocalInboxSummaryBase {
+  type: "sms";
+  source: "simulated";
+  sender: string;
+  recipient: string;
+  body: string;
+  provider: "simulated";
+  verification: "local";
+}
+
+export type LocalInboxSummary = LocalEmailSummary | LocalSmsSummary | LocalWebhookSummary;
 
 export interface LocalEmailMessage extends LocalEmailSummary {
   textBody: string;
@@ -31,7 +41,9 @@ export interface LocalWebhookMessage extends LocalWebhookSummary {
   textBody: string;
 }
 
-export type LocalInboxMessage = LocalEmailMessage | LocalWebhookMessage;
+export type LocalSmsMessage = LocalSmsSummary;
+
+export type LocalInboxMessage = LocalEmailMessage | LocalSmsMessage | LocalWebhookMessage;
 
 export interface LocalInboxPage {
   items: LocalInboxSummary[];
@@ -100,12 +112,15 @@ function hasCommonSummary(value: Record<string, unknown>): boolean {
 function isLocalInboxSummary(value: unknown): value is LocalInboxSummary {
   if (!isRecord(value) || !hasCommonSummary(value)) return false;
   if (value.type === "email") return value.source === "smtp" && typeof value.sender === "string" && typeof value.recipient === "string";
+  if (value.type === "sms") return value.source === "simulated" && typeof value.sender === "string" &&
+    typeof value.recipient === "string" && typeof value.body === "string" && value.provider === "simulated" && value.verification === "local";
   if (value.type === "webhook") return value.source === "http" && value.method === "POST";
   return false;
 }
 
 function isLocalInboxMessage(value: unknown): value is LocalInboxMessage {
-  return isLocalInboxSummary(value) && isRecord(value) && typeof value.textBody === "string";
+  if (!isLocalInboxSummary(value) || !isRecord(value)) return false;
+  return value.type === "sms" || typeof value.textBody === "string";
 }
 
 export async function fetchLocalInboxPage(options: {

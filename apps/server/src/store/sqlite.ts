@@ -37,7 +37,7 @@ export interface LocalCapturePage {
   nextCursor: string | null;
 }
 
-export type LocalCaptureChannel = "all" | "email" | "webhook";
+export type LocalCaptureChannel = "all" | "email" | "sms" | "webhook";
 
 export interface LocalCaptureStore extends ScopedInboxStore {
   /** List a bounded page of local captures, ordered newest first. */
@@ -52,6 +52,10 @@ export interface LocalWebhookCaptureStore {
   insert(message: Omit<StoredMessage, "id"> & { id?: string }): StoredMessage;
 }
 
+export interface LocalSmsCaptureStore {
+  insertSms(message: Omit<StoredMessage, "id"> & { id?: string; dedupeKey: null }): SmsInsertResult;
+}
+
 export interface InboxStore {
   forInbox(inboxId: string): ScopedInboxStore;
   /** Local capture only: every operation is constrained to inbox_id IS NULL. */
@@ -60,6 +64,8 @@ export interface InboxStore {
   forLocalSmtpCapture(): ScopedInboxStore;
   /** Trusted generic local webhook ingress; inserts are webhook-only and unassigned. */
   forLocalWebhookCapture(): LocalWebhookCaptureStore;
+  /** Trusted synthetic local SMS writer; inserts are simulated and unassigned. */
+  forLocalSmsCapture(): LocalSmsCaptureStore;
   insert(message: Omit<StoredMessage, "id"> & { id?: string }): StoredMessage;
   /**
    * Insert an SMS event, deduplicating provider retries by `dedupeKey` (a
@@ -226,7 +232,7 @@ export function migrateInboxStore(database: DatabaseSync): void {
   database.exec("BEGIN");
   try {
     const initialVersion = (database.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
-    if (initialVersion > 1) throw new Error(`Unsupported inbox schema version: ${initialVersion}`);
+    if (initialVersion > 2) throw new Error(`Unsupported inbox schema version: ${initialVersion}`);
     const existed = Boolean(database.prepare(
       "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'messages'",
     ).get());
@@ -248,22 +254,23 @@ export function migrateInboxStore(database: DatabaseSync): void {
       database.exec("ALTER TABLE messages ADD COLUMN capture_origin TEXT");
     }
 
-    // Version 0 databases predate the widened provenance CHECK. Rebuild only
-    // existing tables; NULL provenance is copied verbatim and never inferred.
-    if (existed && initialVersion === 0) {
+    // Versions before 2 predate at least one trusted provenance option. Rebuild
+    // existing tables transactionally; NULL provenance is copied verbatim and
+    // never inferred. Fresh databases already use the current definition.
+    if (existed && initialVersion < 2) {
       columns = database.prepare("PRAGMA table_info(messages)").all() as { name: string }[];
       const expectedColumns = ["id", "type", "source", "sender", "recipient", "subject", "text_body", "html_body", "raw_data", "detections", "created_at", "dedupe_key", "inbox_id", "capture_origin"];
       const unexpected = columns.map((column) => column.name).filter((name) => !expectedColumns.includes(name));
       if (unexpected.length) throw new Error(`Cannot safely migrate unknown messages columns: ${unexpected.join(", ")}`);
-      database.exec(MESSAGE_TABLE_SCHEMA.replace("CREATE TABLE messages", "CREATE TABLE messages__provenance_v1"));
-      database.exec(`INSERT INTO messages__provenance_v1 (${expectedColumns.join(", ")}) SELECT ${expectedColumns.join(", ")} FROM messages`);
+      database.exec(MESSAGE_TABLE_SCHEMA.replace("CREATE TABLE messages", "CREATE TABLE messages__provenance_v2"));
+      database.exec(`INSERT INTO messages__provenance_v2 (${expectedColumns.join(", ")}) SELECT ${expectedColumns.join(", ")} FROM messages`);
       database.exec("DROP TABLE messages");
-      database.exec("ALTER TABLE messages__provenance_v1 RENAME TO messages");
+      database.exec("ALTER TABLE messages__provenance_v2 RENAME TO messages");
       for (const { sql } of previousIndexes) database.exec(sql);
     }
     database.exec("DROP INDEX IF EXISTS idx_messages_dedupe_key");
     database.exec(MIGRATION_2026_10_15_SMS);
-    database.exec("PRAGMA user_version = 1");
+    database.exec("PRAGMA user_version = 2");
     database.exec("COMMIT");
   } catch (error) {
     try {
@@ -469,22 +476,24 @@ export function openInboxStore(dbPath: string, options: {requirePersistent?: boo
   `);
   const localPageStmt = database.prepare(`
     SELECT id, type, source, sender, recipient, subject, detections, created_at,
+      CASE WHEN type = 'sms' THEN raw_data ELSE NULL END AS raw_data,
       CASE WHEN html_body IS NOT NULL AND html_body != '' THEN 1 ELSE 0 END AS has_html,
       CASE WHEN text_body IS NOT NULL AND text_body != '' THEN 1 ELSE 0 END AS has_text
     FROM messages
-    WHERE inbox_id IS NULL AND capture_origin IN ('local_smtp', 'local_webhook')
-      AND (? = 'all' OR (? = 'email' AND capture_origin = 'local_smtp') OR (? = 'webhook' AND capture_origin = 'local_webhook'))
+    WHERE inbox_id IS NULL AND capture_origin IN ('local_smtp', 'local_sms', 'local_webhook')
+      AND (? = 'all' OR (? = 'email' AND capture_origin = 'local_smtp') OR (? = 'sms' AND capture_origin = 'local_sms') OR (? = 'webhook' AND capture_origin = 'local_webhook'))
       AND (? IS NULL OR created_at < ? OR (created_at = ? AND id < ?))
     ORDER BY created_at DESC, id DESC
     LIMIT ?
   `);
   const localSearchPageStmt = database.prepare(`
     SELECT id, type, source, sender, recipient, subject, detections, created_at,
+      CASE WHEN type = 'sms' THEN raw_data ELSE NULL END AS raw_data,
       CASE WHEN html_body IS NOT NULL AND html_body != '' THEN 1 ELSE 0 END AS has_html,
       CASE WHEN text_body IS NOT NULL AND text_body != '' THEN 1 ELSE 0 END AS has_text
     FROM messages
-    WHERE inbox_id IS NULL AND capture_origin IN ('local_smtp', 'local_webhook')
-      AND (? = 'all' OR (? = 'email' AND capture_origin = 'local_smtp') OR (? = 'webhook' AND capture_origin = 'local_webhook'))
+    WHERE inbox_id IS NULL AND capture_origin IN ('local_smtp', 'local_sms', 'local_webhook')
+      AND (? = 'all' OR (? = 'email' AND capture_origin = 'local_smtp') OR (? = 'sms' AND capture_origin = 'local_sms') OR (? = 'webhook' AND capture_origin = 'local_webhook'))
       AND (
         (capture_origin = 'local_smtp' AND (
           COALESCE(subject, '') LIKE ? ESCAPE '\\'
@@ -494,6 +503,12 @@ export function openInboxStore(dbPath: string, options: {requirePersistent?: boo
         ))
         OR (capture_origin = 'local_webhook' AND (
           COALESCE(subject, '') LIKE ? ESCAPE '\\'
+          OR COALESCE(text_body, '') LIKE ? ESCAPE '\\'
+        ))
+        OR (capture_origin = 'local_sms' AND (
+          COALESCE(subject, '') LIKE ? ESCAPE '\\'
+          OR COALESCE(sender, '') LIKE ? ESCAPE '\\'
+          OR COALESCE(recipient, '') LIKE ? ESCAPE '\\'
           OR COALESCE(text_body, '') LIKE ? ESCAPE '\\'
         ))
       )
@@ -512,8 +527,8 @@ export function openInboxStore(dbPath: string, options: {requirePersistent?: boo
   `);
   const trustedLocalCaptureGetStmt = database.prepare(`
     SELECT id, type, source, sender, recipient, subject, text_body, html_body,
-      detections, created_at FROM messages
-    WHERE id = ? AND inbox_id IS NULL AND capture_origin IN ('local_smtp', 'local_webhook')
+      detections, created_at, CASE WHEN type = 'sms' THEN raw_data ELSE NULL END AS raw_data FROM messages
+    WHERE id = ? AND inbox_id IS NULL AND capture_origin IN ('local_smtp', 'local_sms', 'local_webhook')
   `);
   const trustedLocalWebhookInsertStmt = database.prepare(`
     INSERT INTO messages (
@@ -521,6 +536,13 @@ export function openInboxStore(dbPath: string, options: {requirePersistent?: boo
       text_body, html_body, raw_data, detections, created_at,
       dedupe_key, inbox_id, capture_origin
     ) VALUES (?, 'webhook', 'http', ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 'local_webhook')
+  `);
+  const trustedLocalSmsInsertStmt = database.prepare(`
+    INSERT INTO messages (
+      id, type, source, sender, recipient, subject,
+      text_body, html_body, raw_data, detections, created_at,
+      dedupe_key, inbox_id, capture_origin
+    ) VALUES (?, 'sms', 'simulated', ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 'local_sms')
   `);
   const trustedLocalSmtpListStmt = database.prepare(`
     SELECT id, type, source, sender, recipient, subject, detections, created_at,
@@ -698,6 +720,34 @@ export function openInboxStore(dbPath: string, options: {requirePersistent?: boo
           );
           const { id: _ignored, ...rest } = message;
           return { ...rest, id } as StoredMessage;
+        },
+      };
+    },
+    forLocalSmsCapture() {
+      return {
+        insertSms(message) {
+          rejectInboxAssignment(message);
+          rejectCaptureOrigin(message);
+          if (message.type !== "sms" || message.source !== "simulated") {
+            throw new Error("Trusted local SMS storage accepts only simulated SMS messages");
+          }
+          if (message.dedupeKey !== null) {
+            throw new Error("Trusted local SMS storage does not accept provider deduplication keys");
+          }
+          const id = message.id ?? crypto.randomUUID();
+          trustedLocalSmsInsertStmt.run(
+            id,
+            message.sender,
+            message.recipient,
+            message.subject,
+            message.textBody,
+            message.htmlBody,
+            message.rawData,
+            JSON.stringify(message.detections),
+            message.createdAt,
+          );
+          const { id: _ignored, dedupeKey: _dedupeKey, ...rest } = message;
+          return { duplicate: false, message: { ...rest, id } as StoredMessage };
         },
       };
     },
@@ -891,7 +941,7 @@ export function openInboxStore(dbPath: string, options: {requirePersistent?: boo
           if (!Number.isInteger(limit) || limit <= 0) {
             throw new Error("Local capture page size must be a positive integer");
           }
-          if (channel !== "all" && channel !== "email" && channel !== "webhook") {
+          if (channel !== "all" && channel !== "email" && channel !== "sms" && channel !== "webhook") {
             throw new Error("Invalid local capture channel");
           }
           const pageLimit = Math.min(limit, MAX_LOCAL_PAGE_SIZE);
@@ -902,12 +952,12 @@ export function openInboxStore(dbPath: string, options: {requirePersistent?: boo
           const cursorId = decodedCursor?.id ?? null;
           const rows = (trimmed
             ? localSearchPageStmt.all(
-                channel, channel, channel,
-                pattern, pattern, pattern, pattern, pattern, pattern,
+                channel, channel, channel, channel,
+                pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern,
                 cursorAt, cursorAt, cursorAt, cursorId, pageLimit + 1,
               )
             : localPageStmt.all(
-                channel, channel, channel,
+                channel, channel, channel, channel,
                 cursorAt, cursorAt, cursorAt, cursorId, pageLimit + 1,
               )) as unknown as MessageRow[];
           const hasMore = rows.length > pageLimit;
@@ -928,7 +978,17 @@ export function openInboxStore(dbPath: string, options: {requirePersistent?: boo
         },
         getLocalCapture(id) {
           const row = trustedLocalCaptureGetStmt.get(id) as MessageRow | undefined;
-          return row ? toDetail(row) : null;
+          if (!row) return null;
+          const detail = toDetail(row);
+          if (row.type === "sms") {
+            try {
+              const parsed = JSON.parse(row.raw_data ?? "null") as { sms?: SmsEvent } | null;
+              if (parsed?.sms) detail.sms = parsed.sms;
+            } catch {
+              /* No normalized SMS view for malformed stored payloads. */
+            }
+          }
+          return detail;
         },
         get(id) {
           const row = localGetStmt.get(id) as MessageRow | undefined;

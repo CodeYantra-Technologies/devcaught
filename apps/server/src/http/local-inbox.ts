@@ -3,11 +3,16 @@ import type { Connect, ViteDevServer } from "vite";
 import { isNumericLoopbackHost } from "../config.ts";
 import { ensureRuntime, type DevCaughtRuntime } from "../runtime.ts";
 import { normalizeWebhook, WEBHOOK_SIZE_LIMIT } from "../ingest/normalizeWebhook.ts";
+import { normalizeSms, MAX_SMS_BODY } from "../../../../packages/shared/src/sms/adapters.ts";
+import type { SmsEvent } from "../../../../packages/shared/src/types.ts";
 
 const namespace = "/__devcaught/local-inbox";
 const capabilityPath = `${namespace}/health`;
 const messagesPath = `${namespace}/messages`;
 const webhooksPath = `${namespace}/webhooks`;
+const smsPath = `${namespace}/sms`;
+const LOCAL_SMS_REQUEST_SIZE_LIMIT = 16 * 1024;
+const MAX_LOCAL_SMS_PHONE_LENGTH = 16;
 const MAX_PATH_DECODE_PASSES = 32;
 const MAX_REQUEST_TARGET_LENGTH = 4_096;
 const MAX_QUERY_STRING_LENGTH = 2_048;
@@ -17,7 +22,7 @@ const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 50;
 
 type RuntimeProvider = () => Promise<DevCaughtRuntime>;
-type LocalChannel = "all" | "email" | "webhook";
+type LocalChannel = "all" | "email" | "sms" | "webhook";
 
 export interface LocalInboxMiddleware {
   handler: (req: IncomingMessage, res: ServerResponse, next: Connect.NextFunction) => void;
@@ -109,6 +114,7 @@ type LocalRoute =
   | { kind: "list"; limit: number; cursor?: string; query?: string; channel: LocalChannel }
   | { kind: "detail"; id: string }
   | { kind: "webhook-ingress" }
+  | { kind: "sms-ingress" }
   | { kind: "missing" }
   | { kind: "bad-request" };
 
@@ -117,6 +123,7 @@ function parseLocalRoute(target: string): LocalRoute {
   const rawPath = target.split(/[?#]/, 1)[0] ?? "";
   if (rawPath === capabilityPath) return target === capabilityPath ? { kind: "health" } : { kind: "missing" };
   if (rawPath === webhooksPath) return target === webhooksPath ? { kind: "webhook-ingress" } : { kind: "bad-request" };
+  if (rawPath === smsPath) return target === smsPath ? { kind: "sms-ingress" } : { kind: "bad-request" };
   if (target.includes("#")) return rawPath === messagesPath || rawPath.startsWith(`${messagesPath}/`)
     ? { kind: "bad-request" }
     : { kind: "missing" };
@@ -152,7 +159,7 @@ function parseLocalRoute(target: string): LocalRoute {
       (query.length > MAX_SEARCH_QUERY_LENGTH || /[\u0000-\u001f\u007f]/.test(query))
     ) return { kind: "bad-request" };
     const channelValue = params.get("channel") ?? "all";
-    if (channelValue !== "all" && channelValue !== "email" && channelValue !== "webhook") return { kind: "bad-request" };
+    if (channelValue !== "all" && channelValue !== "email" && channelValue !== "sms" && channelValue !== "webhook") return { kind: "bad-request" };
     return { kind: "list", limit, channel: channelValue, ...(cursor === undefined ? {} : { cursor }), ...(query === undefined ? {} : { query }) };
   }
 
@@ -172,6 +179,8 @@ function safeSummary(message: {
   createdAt: number;
   hasHtml: boolean;
   hasText: boolean;
+  textBody?: string;
+  sms?: SmsEvent;
 }) {
   if (message.type === "webhook") {
     return {
@@ -183,6 +192,22 @@ function safeSummary(message: {
       createdAt: message.createdAt,
       hasHtml: message.hasHtml,
       hasText: message.hasText,
+    };
+  }
+  if (message.type === "sms") {
+    return {
+      id: message.id,
+      type: "sms",
+      source: "simulated",
+      sender: message.sms?.from ?? message.sender,
+      recipient: message.sms?.to ?? message.recipient,
+      subject: message.subject,
+      createdAt: message.createdAt,
+      hasHtml: false,
+      hasText: true,
+      body: message.sms?.body ?? message.textBody ?? "",
+      provider: "simulated",
+      verification: "local",
     };
   }
   return {
@@ -252,7 +277,7 @@ function requestSecurityFailure(req: IncomingMessage, authority: string): string
   return undefined;
 }
 
-async function readJsonBody(req: IncomingMessage): Promise<{ body?: string; status?: 400 | 413 | 415 }> {
+async function readJsonBody(req: IncomingMessage, maxBytes = WEBHOOK_SIZE_LIMIT): Promise<{ body?: string; status?: 400 | 413 | 415 }> {
   const encodings = rawHeaderValues(req, "content-encoding");
   if (encodings.length > 1 || (encodings.length === 1 && encodings[0]!.toLowerCase() !== "identity")) {
     return { status: 415 };
@@ -263,7 +288,7 @@ async function readJsonBody(req: IncomingMessage): Promise<{ body?: string; stat
   }
   const lengths = rawHeaderValues(req, "content-length");
   if (lengths.length > 1 || (lengths.length === 1 && !/^\d+$/.test(lengths[0]!))) return { status: 400 };
-  if (lengths.length === 1 && Number(lengths[0]) > WEBHOOK_SIZE_LIMIT) {
+  if (lengths.length === 1 && Number(lengths[0]) > maxBytes) {
     req.resume();
     return { status: 413 };
   }
@@ -275,7 +300,7 @@ async function readJsonBody(req: IncomingMessage): Promise<{ body?: string; stat
     for await (const chunk of req) {
       const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
       size += bytes.byteLength;
-      if (size > WEBHOOK_SIZE_LIMIT) {
+      if (size > maxBytes) {
         oversized = true;
         chunks.length = 0;
         continue;
@@ -373,8 +398,8 @@ export function createLocalInboxMiddleware(
         send(res, req.method === "GET" ? 404 : 405, { ok: false, error: req.method === "GET" ? "Not found" : "Method not allowed" });
         return;
       }
-      if ((route.kind === "webhook-ingress" && req.method !== "POST") ||
-        (route.kind !== "webhook-ingress" && req.method !== "GET")) {
+      const isIngress = route.kind === "webhook-ingress" || route.kind === "sms-ingress";
+      if ((isIngress && req.method !== "POST") || (!isIngress && req.method !== "GET")) {
         send(res, 405, { ok: false, error: "Method not allowed" });
         return;
       }
@@ -431,6 +456,81 @@ export function createLocalInboxMiddleware(
         }
         return;
       }
+      if (route.kind === "sms-ingress") {
+        const bodyResult = await readJsonBody(req, LOCAL_SMS_REQUEST_SIZE_LIMIT);
+        if (bodyResult.status) {
+          send(res, bodyResult.status, {
+            ok: false,
+            error: bodyResult.status === 413 ? "SMS request exceeds 16 KB limit" :
+              bodyResult.status === 415 ? "Unsupported content type or encoding" : "Invalid request body",
+          });
+          return;
+        }
+        let parsedBody: unknown;
+        try {
+          parsedBody = JSON.parse(bodyResult.body ?? "");
+        } catch {
+          send(res, 400, { ok: false, error: "Invalid JSON body" });
+          return;
+        }
+        if (typeof parsedBody !== "object" || parsedBody === null || Array.isArray(parsedBody)) {
+          send(res, 400, { ok: false, error: "Invalid synthetic SMS" });
+          return;
+        }
+        const input = parsedBody as Record<string, unknown>;
+        const sender = input.sender;
+        const recipient = input.recipient;
+        const text = input.text;
+        const validPhone = (value: unknown): value is string =>
+          typeof value === "string" && value.length <= MAX_LOCAL_SMS_PHONE_LENGTH &&
+          /^\+[1-9][0-9]{1,14}$/.test(value);
+        if (
+          Object.keys(input).some(key => !["sender", "recipient", "text"].includes(key)) ||
+          !validPhone(sender) || !validPhone(recipient) ||
+          typeof text !== "string" || text.trim().length === 0 || text.length > MAX_SMS_BODY
+        ) {
+          send(res, 400, { ok: false, error: "Invalid synthetic SMS" });
+          return;
+        }
+        if (!runtime.store || typeof runtime.store.forLocalSmsCapture !== "function") {
+          send(res, 503, { ok: false, error: "Unavailable" });
+          return;
+        }
+        try {
+          const event = normalizeSms({
+            provider: "simulated",
+            kind: "inbound",
+            messageSid: null,
+            from: sender,
+            to: recipient,
+            body: text,
+            status: null,
+            errorCode: null,
+            numSegments: null,
+            numMedia: null,
+            mediaUrls: [],
+            verification: "local",
+            receivedAt: Date.now(),
+          });
+          const stored = runtime.store.forLocalSmsCapture().insertSms({
+            type: "sms",
+            source: "simulated",
+            sender: event.from,
+            recipient: event.to,
+            subject: "Synthetic SMS",
+            textBody: event.body,
+            htmlBody: "",
+            rawData: JSON.stringify({ sms: event, request: { body: event.body } }),
+            detections: [],
+            createdAt: event.receivedAt,
+            dedupeKey: null,
+          });
+          send(res, 201, { ok: true, id: stored.duplicate ? stored.id : stored.message.id });
+        } catch {
+          send(res, 503, { ok: false, error: "Unavailable" });
+        }
+        return;
+      }
       if (!runtime.store || typeof runtime.store.forLocalCapture !== "function") {
         send(res, 503, { ok: false, error: "Unavailable" });
         return;
@@ -461,7 +561,7 @@ export function createLocalInboxMiddleware(
           message: {
             ...safeSummary(message),
             ...(message.type === "webhook" ? { method: "POST" } : {}),
-            textBody: message.textBody,
+            ...(message.type === "sms" ? {} : { textBody: message.textBody }),
           },
         });
       } catch (error) {

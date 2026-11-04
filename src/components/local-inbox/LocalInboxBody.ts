@@ -6,9 +6,9 @@ export function LocalInboxBody({ message }: { message: LocalInboxMessage }): Rea
   return createElement(
     "pre",
     {
-      "aria-label": message.type === "webhook" ? "Webhook JSON payload" : "Email plain-text body",
+      "aria-label": message.type === "webhook" ? "Webhook JSON payload" : message.type === "sms" ? "SMS message body" : "Email plain-text body",
       className: "whitespace-pre-wrap break-words px-5 py-5 font-mono text-sm leading-6 text-foreground",
     },
-    message.textBody || "(This message has no plain-text body.)",
+    (message.type === "sms" ? message.body : message.textBody) || "(This message has no plain-text body.)",
   );
 }

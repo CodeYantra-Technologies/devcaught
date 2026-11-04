@@ -17,3 +17,17 @@ test("renders webhook JSON as escaped text rather than executable markup", () =>
   assert.match(markup, /&lt;img src=x onerror=alert\(1\)&gt;/);
   assert.doesNotMatch(markup, /<script>|<img /);
 });
+
+test("renders synthetic SMS body as escaped plain text", () => {
+  const payload = "<script>window.compromised=true</script> & message";
+  const markup = renderToStaticMarkup(LocalInboxBody({
+    message: {
+      id: "sms-1", type: "sms", source: "simulated", sender: "+*******0123", recipient: "+*******0199",
+      subject: "Synthetic SMS", createdAt: 1000, hasHtml: false, hasText: true, body: payload,
+      provider: "simulated", verification: "local",
+    },
+  }));
+  assert.match(markup, /aria-label="SMS message body"/);
+  assert.match(markup, /&lt;script&gt;window\.compromised=true&lt;\/script&gt; &amp; message/);
+  assert.doesNotMatch(markup, /<script>/);
+});

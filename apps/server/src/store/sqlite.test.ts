@@ -108,7 +108,7 @@ describe("local capture storage view", () => {
       assert.throws(() => trusted.insert({ ...base, capture_origin: "local_smtp" } as never), /assigned only by trusted ingestion/);
       assert.throws(() => trusted.insertSms({ ...base, type: "sms", dedupeKey: null } as never), /does not accept SMS/);
 
-      for (const origin of ["local_smtp", "local_webhook"] as const) {
+      for (const origin of ["local_smtp", "local_webhook", "local_sms"] as const) {
         for (const assignment of ["captureOrigin", "capture_origin"] as const) {
           assert.throws(() => store.insert({ ...base, [assignment]: origin } as never), /assigned only by trusted ingestion/);
           assert.throws(() => store.insertSms({ ...base, type: "sms", dedupeKey: null, [assignment]: origin } as never), /assigned only by trusted ingestion/);
@@ -507,7 +507,7 @@ describe("SMS storage", () => {
         (id,type,source,detections,created_at,capture_origin) VALUES ('bad-smtp','webhook','http','[]',15,'local_smtp')`).run(), /CHECK constraint failed/i);
       assert.throws(() => db.prepare(`INSERT INTO messages
         (id,type,source,detections,created_at,capture_origin) VALUES ('bad-forgery','email','smtp','[]',16,'forged')`).run(), /CHECK constraint failed/i);
-      assert.equal((db.prepare("PRAGMA user_version").get() as {user_version:number}).user_version, 1);
+      assert.equal((db.prepare("PRAGMA user_version").get() as {user_version:number}).user_version, 2);
       migrateInboxStore(db);
       assert.equal((db.prepare("SELECT COUNT(*) AS n FROM messages").get() as {n:number}).n, 4);
     } finally {
@@ -528,7 +528,7 @@ describe("SMS storage", () => {
         indexes: (db.prepare("SELECT name, sql FROM sqlite_master WHERE type='index' AND tbl_name='messages' AND sql IS NOT NULL ORDER BY name").all() as {name:string; sql:string}[]).map(x => ({ name: x.name, sql: x.sql.replace(/\s+/g, " ").trim() })),
       });
       assert.deepEqual(schema(upgraded), schema(fresh));
-      assert.equal((upgraded.prepare("PRAGMA user_version").get() as {user_version:number}).user_version, 1);
+      assert.equal((upgraded.prepare("PRAGMA user_version").get() as {user_version:number}).user_version, 2);
     } finally {
       fresh.close();
       upgraded.close();
@@ -560,13 +560,78 @@ describe("SMS storage", () => {
     }
   });
 
+  it("upgrades schema version 1 to local SMS provenance without promoting existing SMS", () => {
+    const db = new DatabaseSync(":memory:");
+    try {
+      db.exec(OLD_PROVENANCE_SCHEMA);
+      db.exec("PRAGMA user_version = 1");
+      db.prepare(`INSERT INTO messages (id,type,source,detections,created_at,inbox_id,capture_origin)
+        VALUES ('legacy-sms','sms','http','[]',1,NULL,NULL),
+               ('private-sms','sms','http','[]',2,'private-a',NULL)`).run();
+      migrateInboxStore(db);
+      assert.equal((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 2);
+      const rows = db.prepare("SELECT id,inbox_id,capture_origin FROM messages ORDER BY id").all() as
+        { id: string; inbox_id: string | null; capture_origin: string | null }[];
+      assert.deepEqual(rows.map(row => ({ ...row })), [
+        { id: "legacy-sms", inbox_id: null, capture_origin: null },
+        { id: "private-sms", inbox_id: "private-a", capture_origin: null },
+      ]);
+      db.prepare(`INSERT INTO messages (id,type,source,detections,created_at,capture_origin)
+        VALUES ('valid-local-sms','sms','simulated','[]',3,'local_sms')`).run();
+      for (const [type, source, inbox] of [
+        ["email", "simulated", null],
+        ["sms", "http", null],
+        ["sms", "simulated", "private-a"],
+      ]) {
+        assert.throws(() => db.prepare(`INSERT INTO messages
+          (id,type,source,detections,created_at,inbox_id,capture_origin) VALUES ('invalid','${type}','${source}','[]',4,?,'local_sms')`)
+          .run(inbox), /CHECK constraint failed/i);
+      }
+      migrateInboxStore(db);
+      assert.equal((db.prepare("SELECT COUNT(*) AS n FROM messages").get() as { n: number }).n, 3);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("assigns local SMS provenance only through the dedicated synthetic SMS writer", () => {
+    const { store } = openInboxStore(":memory:");
+    try {
+      const localSms = store.forLocalSmsCapture();
+      const base = {
+        type: "sms" as const, source: "simulated" as const, sender: "+14155550123",
+        recipient: "+14155550199", subject: "Synthetic SMS", textBody: "test body",
+        htmlBody: "", rawData: JSON.stringify({ sms: { provider: "simulated" } }),
+        detections: [], createdAt: 5, dedupeKey: null,
+      };
+      const inserted = localSms.insertSms(base);
+      assert.equal(inserted.duplicate, false);
+      if (inserted.duplicate) throw new Error("unexpected duplicate");
+      assert.equal(inserted.message.source, "simulated");
+      assert.equal((store.get("not-found")), null);
+      const row = store.getRaw(inserted.message.id);
+      assert.equal(row, base.rawData);
+      assert.throws(() => localSms.insertSms({ ...base, type: "email" } as never), /only simulated SMS/);
+      assert.throws(() => localSms.insertSms({ ...base, source: "http" } as never), /only simulated SMS/);
+      assert.throws(() => localSms.insertSms({ ...base, captureOrigin: "local_sms" } as never), /assigned only by trusted ingestion/);
+      assert.throws(() => localSms.insertSms({ ...base, capture_origin: "local_sms" } as never), /assigned only by trusted ingestion/);
+      assert.throws(() => localSms.insertSms({ ...base, inboxId: "private-a" } as never), /cannot specify an inbox assignment/);
+      assert.throws(() => localSms.insertSms({ ...base, dedupeKey: "provider-key" } as never), /provider deduplication keys/);
+      assert.equal(store.forInbox("private-a").count(), 0);
+      assert.equal(store.forLocalCapture().listPage({ limit: 10, channel: "sms" }).items.some(item => item.id === inserted.message.id), true,
+        "trusted local SMS becomes readable through the explicit local SMS channel");
+    } finally {
+      store.close();
+    }
+  });
+
   it("rejects a future schema marker without changing the database", () => {
     const db = new DatabaseSync(":memory:");
     try {
       db.exec(OLD_PROVENANCE_SCHEMA);
-      db.exec("PRAGMA user_version = 2");
+      db.exec("PRAGMA user_version = 3");
       assert.throws(() => migrateInboxStore(db), /Unsupported inbox schema version/);
-      assert.equal((db.prepare("PRAGMA user_version").get() as {user_version:number}).user_version, 2);
+      assert.equal((db.prepare("PRAGMA user_version").get() as {user_version:number}).user_version, 3);
       assert.equal((db.prepare("PRAGMA table_info(messages)").all() as {name:string}[]).some(c => c.name === "dedupe_key"), true);
     } finally {
       db.close();
@@ -704,6 +769,28 @@ describe("SMS storage", () => {
     assert.ok(!columns.some((column) => column.name === "capture_origin"));
     const rows = db.prepare("SELECT COUNT(*) AS n FROM messages").get() as { n: number };
     assert.equal(rows.n, 1);
+    db.close();
+  });
+
+  it("rolls back the version 1 provenance rebuild when a step fails", () => {
+    const db = new DatabaseSync(":memory:");
+    db.exec(OLD_PROVENANCE_SCHEMA);
+    db.exec("PRAGMA user_version = 1");
+    db.prepare(`INSERT INTO messages (id,type,source,detections,created_at)
+      VALUES ('keep-v1','sms','http','[]',1)`).run();
+    const failing = {
+      exec(sql: string) {
+        if (sql.includes("CREATE TABLE messages__provenance_v2")) throw new Error("rebuild failed");
+        db.exec(sql);
+      },
+      prepare: (sql: string) => db.prepare(sql),
+    } as unknown as DatabaseSync;
+
+    assert.throws(() => migrateInboxStore(failing), /rebuild failed/);
+    assert.equal((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 1);
+    const tableSql = (db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='messages'").get() as { sql: string }).sql;
+    assert.equal(tableSql.includes("local_sms"), false);
+    assert.equal((db.prepare("SELECT id FROM messages").get() as { id: string }).id, "keep-v1");
     db.close();
   });
 

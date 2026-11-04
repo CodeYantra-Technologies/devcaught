@@ -1,5 +1,5 @@
 export type MessageType = "email" | "webhook" | "sms" | "push";
-export type MessageSource = "smtp" | "http" | "test";
+export type MessageSource = "smtp" | "http" | "test" | "simulated";
 export type DetectionType = "otp" | "url" | "payment" | "order" | "transaction";
 
 /** SMS providers DevCaught can capture callbacks from, plus local simulation. */
