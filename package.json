@@ -28,6 +28,7 @@
     "check:auth": "node scripts/check-auth-invariant.mjs",
     "test": "node --test 'scripts/**/*.test.mjs' && node --experimental-strip-types --test src/lib/auth/auth-config.test.ts packages/shared/test/sms.test.ts packages/shared/test/sms/phone.test.ts packages/shared/test/sms/adapters.test.ts apps/server/src/ingest/sms/dedupe.test.ts packages/parsers/test/*.test.ts apps/server/src/config.test.ts apps/server/src/store/sqlite.test.ts apps/server/src/smtp/smtp.test.ts apps/server/src/http/webhook.test.ts apps/server/src/http/security.test.ts apps/server/src/ingest/twilioWebhook.test.ts",
     "test:devcaught": "node --experimental-strip-types --test packages/parsers/test/*.test.ts apps/server/src/config.test.ts apps/server/src/store/sqlite.test.ts apps/server/src/smtp/smtp.test.ts apps/server/src/http/webhook.test.ts",
+    "test:local-capture": "node --experimental-strip-types --test apps/server/src/vite-local-capture-plugin.test.ts apps/server/src/http/local-inbox.test.ts",
     "send:test-mail": "node scripts/send-test-mail.mjs",
     "lint": "eslint .",
     "format": "prettier --write ."

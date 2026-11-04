@@ -22,26 +22,41 @@ DevCaught requires **Node.js 22.13.0 or later**.
 git clone https://github.com/CodeYantra-Technologies/devcaught.git
 cd devcaught
 npm install
-npm run dev
+DATABASE_URL= npm run dev
 ```
 
-The dashboard binds to `127.0.0.1:8080` by default. To make it reachable over
-the network for live-preview development, explicitly opt in:
+The dashboard and local-capture routes bind to `127.0.0.1:8080` by default.
+Open the Local Inbox at <http://127.0.0.1:8080/local-inbox>. The separate
+HTTP listener defaults to `127.0.0.1:8025`; it is not the local-capture API.
+
+For local-only use, keep `DATABASE_URL` empty as shown above. The normal app
+startup still initializes its separate in-memory PGLite database and applies
+the app schema migrations there. A nonempty `DATABASE_URL` selects the
+configured application database. `DEVCAUGHT_DB_PATH` controls only the
+independent SQLite file used for captured inbox records; it does not select or
+isolate the application database. Do not use a production database URL for
+local capture.
+
+To make the Vite dashboard reachable over the network for live-preview
+development, explicitly opt in:
 
 ```bash
-DEVCAUGHT_LIVE_PREVIEW=1 npm run dev
+DATABASE_URL= DEVCAUGHT_LIVE_PREVIEW=1 npm run dev
 ```
 
 This binds Vite to `0.0.0.0:8080`; use it only in a trusted, isolated
-development environment. The normal startup remains loopback-only.
+development environment. Do not use live-preview mode for local three-channel
+capture: the local-capture security gate requires an eligible loopback Vite
+listener and rejects wildcard listeners. The normal startup remains
+loopback-only.
 
 This starts:
 
 | Service | Default |
 | --- | --- |
-| Dashboard | `http://127.0.0.1:8080` |
+| Vite dashboard and local capture | `http://127.0.0.1:8080/local-inbox` |
 | SMTP receiver | `127.0.0.1:1025` |
-| HTTP API | `127.0.0.1:8025` |
+| Separate HTTP listener | `127.0.0.1:8025` |
 
 The default numeric loopback bind enables **local SMTP capture**. It accepts any
 envelope recipient and stores mail in the local SQLite inbox; recipients do not
@@ -145,7 +160,7 @@ SMTP Server: Running
 Host: 127.0.0.1
 Port: 1025
 
-HTTP Dashboard: Running
+Separate HTTP listener: Running
 Port: 8025
 ```
 
@@ -189,7 +204,6 @@ const transport = nodemailer.createTransport({
   host: "127.0.0.1",
   port: 1025,
   secure: false,
-  tls: { rejectUnauthorized: false },
 });
 
 await transport.sendMail({
@@ -213,6 +227,19 @@ npm run send:test-mail -- --fixture=link
 `http://127.0.0.1:8080`, plus SMTP at `127.0.0.1:1025` and a separate HTTP
 listener at `127.0.0.1:8025`. The local capture routes and Local Inbox API are
 on the **Vite origin**; port `8025` is not the local capture endpoint.
+
+For a local-only first run, start with `DATABASE_URL` empty:
+
+```bash
+DATABASE_URL= npm run dev
+```
+
+The wrapper does not load `DATABASE_URL` from dotenv files, but an exported
+shell value is inherited. An empty value selects the in-memory PGLite app
+database; normal startup still runs that separate app bootstrap and its schema
+migrations. The inbox capture store is a separate SQLite database. Setting
+`DEVCAUGHT_DB_PATH` isolates only that capture store and does not protect or
+select the app database.
 
 Open the Local Inbox at <http://127.0.0.1:8080/local-inbox>. A same-machine
 project can send email using ordinary SMTP settings:
@@ -309,14 +336,18 @@ callbacks.
 
 The example uses only Node built-in modules and targets numeric loopback. Run
 DevCaught and the project in the same WSL distribution/network namespace (or
-the same local machine). To keep the example isolated from your usual inbox,
-start DevCaught with a disposable database path:
+the same local machine). In a Bash shell, create a unique temporary directory
+for the capture SQLite store and start DevCaught with no remote application
+database configured:
 
 ```bash
 # In the DevCaught checkout:
+DEVCAUGHT_CAPTURE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/devcaught-local-integration.XXXXXX")"
+printf 'Disposable capture directory: %s\n' "$DEVCAUGHT_CAPTURE_DIR"
+DATABASE_URL= \
 DEVCAUGHT_HOST=127.0.0.1 \
 DEVCAUGHT_SMTP_ROUTING_MODE=local \
-DEVCAUGHT_DB_PATH=/tmp/devcaught-local-integration.sqlite \
+DEVCAUGHT_DB_PATH="$DEVCAUGHT_CAPTURE_DIR/inbox.sqlite" \
 npm run dev
 ```
 
@@ -331,8 +362,39 @@ DevCaught itself must be running on the same ports.
 
 The example writes three uniquely marked synthetic captures and verifies them
 through the Local Inbox API. It does not clear them or touch the SQLite file
-directly. Remove the disposable database only after stopping the DevCaught
-process that owns it.
+directly. Press `Ctrl+C` in the DevCaught terminal, wait for `npm run dev` to
+return to the shell prompt, and confirm the DevCaught process has exited. Do
+not clean up if the process is still running or its exit is uncertain. In that
+same Bash shell, the guarded cleanup below accepts only the path pattern
+created by the `mktemp` command above, rejects a symlinked directory or
+database file, and removes only the database and its known sidecars. `rmdir`
+fails when anything else remains in the directory.
+
+```bash
+(
+  set -eu
+  : "${DEVCAUGHT_CAPTURE_DIR:?DEVCAUGHT_CAPTURE_DIR is required}"
+  case "$DEVCAUGHT_CAPTURE_DIR" in
+    "${TMPDIR:-/tmp}"/devcaught-local-integration.??????) ;;
+    *) printf '%s\n' 'Refusing unexpected capture directory path' >&2; exit 1 ;;
+  esac
+  if [ ! -d "$DEVCAUGHT_CAPTURE_DIR" ] || [ -L "$DEVCAUGHT_CAPTURE_DIR" ]; then
+    printf '%s\n' 'Refusing missing, non-directory, or symlinked capture path' >&2
+    exit 1
+  fi
+  for file in inbox.sqlite inbox.sqlite-wal inbox.sqlite-shm inbox.sqlite-journal; do
+    if [ -L "$DEVCAUGHT_CAPTURE_DIR/$file" ]; then
+      printf 'Refusing symlinked database file: %s\n' "$file" >&2
+      exit 1
+    fi
+  done
+  rm -f -- "$DEVCAUGHT_CAPTURE_DIR/inbox.sqlite" \
+    "$DEVCAUGHT_CAPTURE_DIR/inbox.sqlite-wal" \
+    "$DEVCAUGHT_CAPTURE_DIR/inbox.sqlite-shm" \
+    "$DEVCAUGHT_CAPTURE_DIR/inbox.sqlite-journal"
+  rmdir -- "$DEVCAUGHT_CAPTURE_DIR"
+)
+```
 
 ## Environment variables
 
@@ -370,10 +432,11 @@ The dashboard lives in `src/` so `npm run dev` is a single Vite process that als
 ## Scripts
 
 ```bash
-npm run dev              # dashboard + SMTP + HTTP API
-npm run test:devcaught   # parsers, store, SMTP capture
-npm run typecheck
-npm run send:test-mail
+npm run dev                # dashboard + SMTP + HTTP API
+npm run test:devcaught     # parsers, store, SMTP capture
+npm run test:local-capture # isolated plugin and local Inbox route tests
+npm run typecheck          # full TypeScript check
+npm run send:test-mail     # send a synthetic email to local SMTP
 ```
 
 ## Brand assets
