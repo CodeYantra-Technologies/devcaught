@@ -68,7 +68,8 @@ npm run send:test-mail -- --fixture=link
 
 ## What DevCaught is
 
-DevCaught is a local testing tool for developers building apps that send email.
+DevCaught is a local testing tool for developers testing app email, synthetic
+SMS, and generic JSON webhook capture.
 
 Use it when you want to test:
 
@@ -93,15 +94,16 @@ DevCaught is intentionally small in V0.2.
 - It does not deliver email to real users.
 - It does not run in Vercel/Supabase hosted environments via `127.0.0.1`.
 - It is not a cloud email service.
-- It has no AI, auth, Docker, SMS, or push notifications yet.
+- It does not send real SMS or push notifications. SMS capture is synthetic and
+  local-only; provider callbacks are a separate configured route.
 
 `127.0.0.1:1025` means "this same machine". If your app is deployed on Vercel or Supabase, `127.0.0.1` points to their server, not your laptop. DevCaught is for local development.
 
 ## Features
 
-- Webhook capture with headers, query strings, formatted payload, and original body
-- Payment, order, and transaction reference detection in JSON and email
-- Inbox filters for email, webhook, and commerce detections
+- Loopback-only synthetic SMS and generic JSON webhook capture
+- Deterministic OTP and link detection in email
+- Local Inbox filters for email, SMS, and webhooks
 - Local SMTP capture (`127.0.0.1:1025` by default)
 - SQLite storage on disk
 - Web dashboard with search, detail, delete, and clear
@@ -205,44 +207,132 @@ npm run send:test-mail
 npm run send:test-mail -- --fixture=link
 ```
 
-## Webhook inbox (V0.2)
+## Local project integration
 
-Send a POST request to `http://127.0.0.1:8025/api/webhooks` or any named
-path below it, such as `/api/webhooks/stripe` or `/api/webhooks/orders`.
-The dashboard also accepts these paths on its own origin.
+`npm run dev` starts the dashboard and local-capture middleware on Vite at
+`http://127.0.0.1:8080`, plus SMTP at `127.0.0.1:1025` and a separate HTTP
+listener at `127.0.0.1:8025`. The local capture routes and Local Inbox API are
+on the **Vite origin**; port `8025` is not the local capture endpoint.
 
-```bash
-curl -X POST http://127.0.0.1:8025/api/webhooks/checkout \
-  -H 'Content-Type: application/json' \
-  -d '{"type":"payment.succeeded","data":{"object":{"object":"payment","id":"pay_42","order_id":"ord_17","transaction_id":"txn_9","amount":2499,"currency":"USD","status":"succeeded"}}}'
+Open the Local Inbox at <http://127.0.0.1:8080/local-inbox>. A same-machine
+project can send email using ordinary SMTP settings:
+
+```text
+SMTP_HOST=127.0.0.1
+SMTP_PORT=1025
+SMTP_SECURE=false
 ```
 
-The receiver returns `201 {"ok":true,"id":"…"}` after storage. Every delivery
-is a separate captured message, including retries. No event is forwarded or executed.
-Use **Catch webhook** in the inbox or Settings to copy the listener URL and
-send a sample request. Filter by **Webhook**, **Payment**, **Order**, or
-**Transaction**; select a message to inspect detections, headers, payload, and Raw.
-Search, individual deletion, and clear inbox work across email and webhooks.
+Local SMTP capture accepts arbitrary envelope recipients. It has no SMTP
+username, password, AUTH command, or STARTTLS. The receiver is intended for
+loopback development only. `DEVCAUGHT_HOST` controls the SMTP and separate HTTP
+listener bind; `DEVCAUGHT_SMTP_PORT` changes the SMTP port. The Vite default is
+set in `vite.config.ts`; use the exact Vite port when forming local HTTP URLs.
+SMTP DATA is limited to 10 MiB by default; `DEVCAUGHT_SMTP_SIZE_LIMIT` changes
+that limit.
 
-UTF-8 JSON, text, and form bodies are supported (1 MB maximum; larger requests
-return 413). Empty bodies and malformed JSON remain inspectable. Compressed
-requests are rejected with 415. Raw contains a request envelope with method,
-path/query, headers, and original UTF-8 body. Headers are stored as received,
-including credentials; use development data only. There is no signature verification.
+The local synthetic HTTP ingresses are:
 
-Commerce detection is deterministic: nested JSON entity IDs (`payment`,
-`payment_intent`, `charge`, `order`, `transaction`), explicit reference keys
-such as `order_id` / `transactionId`, and `type` / `event` names are recognized.
-Plain email references such as `Order #ORD-42` and `Transaction ID: txn_9`
-are recognized too. Amount, currency, and status fields are shown when present;
-amounts retain the sender's original units (no assumed cents conversion).
-These are inspection hints, not confirmation of a successful payment. Generic
-unrelated IDs and unlabelled amounts are not classified. Existing messages keep
-their stored detections; new detections apply to newly received messages.
+| Channel | Endpoint | JSON body |
+| --- | --- | --- |
+| SMS | `http://127.0.0.1:8080/__devcaught/local-inbox/sms` | `{"sender":"+12025550123","recipient":"+12025550199","text":"Synthetic message"}` |
+| Webhook | `http://127.0.0.1:8080/__devcaught/local-inbox/webhooks` | Any valid JSON value, for example `{"event":"checkout.created","testId":"example-123"}` |
 
-Webhook data uses the existing SQLite store, so no schema migration is needed.
-A local app can reach this receiver directly; external providers need a separately
-configured tunnel or local forwarding tool. DevCaught does not create one.
+Use fictional `example.test` email addresses and synthetic identifiers. The SMS
+sample uses fictional North American 555-01xx numbers. Do not send real phone
+numbers, personal data, credentials, or production payloads: captures are
+stored in the configured local SQLite inbox and are visible in the dashboard.
+
+### Local HTTP request requirements
+
+The local ingress requires all of the following:
+
+- The TCP peer must be loopback.
+- `Host` must exactly match the Vite listener authority, such as
+  `127.0.0.1:8080`.
+- Every POST must include exactly one `Origin` matching the Vite origin, such
+  as `http://127.0.0.1:8080`.
+- `X-Forwarded-Host`, `X-Forwarded-Proto`, and `X-Forwarded-For` are rejected.
+  Do not put a reverse proxy between the client and DevCaught.
+- Send JSON with `Content-Type: application/json` (optionally
+  `charset=utf-8`). Compressed request bodies are not accepted.
+
+A non-browser client running in the same network namespace can use the numeric
+loopback URL, let its HTTP library generate the matching `Host`, and set the
+matching `Origin` header. The Node example below does this with built-in
+`fetch`. Browser code on another origin cannot satisfy this contract and
+cross-origin access is not enabled. `Origin` is a browser security signal, not
+authentication; a local process can set it, so this is not a boundary between
+untrusted processes on the same machine.
+
+Webhook capture accepts only valid JSON at the exact endpoint above: there are
+no arbitrary webhook subpaths or query strings, and form, text, or malformed
+JSON bodies are rejected. The request limit is 1 MiB. The payload is formatted
+for display, with an `event` or `type` value used as its subject when present.
+The Local Inbox API does not expose request headers or a raw request envelope.
+Selected sensitive header names are redacted before internal storage; secrets
+inside the body remain payload data and should not be sent.
+
+Synthetic SMS accepts exactly the `sender`, `recipient`, and `text` fields.
+Phone numbers must use the accepted international format, the request limit is
+16 KiB, and the text limit is 1,024 characters. Returned phone numbers are
+masked in Local Inbox summaries and details. The record is marked `simulated`
+and `local`; this route does not contact a carrier or verify provider
+signatures.
+
+The local Inbox API is GET-only and shares this Vite origin:
+
+```text
+GET /__devcaught/local-inbox/health
+GET /__devcaught/local-inbox/messages?channel=all&limit=20&query=...
+GET /__devcaught/local-inbox/messages/{id}
+```
+
+The `channel` value can be `all`, `email`, `sms`, or `webhook`. Lists support
+search and cursor pagination (up to 50 records per page). The dashboard presents
+All, Email, SMS, and Webhooks filters, search, load-more, refresh, and plain-text
+message details.
+
+### Local capture versus provider routes
+
+The synthetic SMS and generic JSON endpoints above are local development
+ingresses. They are not authenticated and do not verify webhook signatures.
+The HTTP listener on port `8025` is separate. Its generic `/api/webhooks`
+handler is currently fail-closed with `401 Unauthorized`; it is not the local
+capture route. The `/api/webhooks/twilio` provider callback is separate and
+verifies configured Twilio signatures before ingestion; private SMS routing
+adds account and destination checks. Do not expose
+the local capture ports to a network or use these synthetic routes for provider
+callbacks.
+
+### Run the standalone example from another local project
+
+The example uses only Node built-in modules and targets numeric loopback. Run
+DevCaught and the project in the same WSL distribution/network namespace (or
+the same local machine). To keep the example isolated from your usual inbox,
+start DevCaught with a disposable database path:
+
+```bash
+# In the DevCaught checkout:
+DEVCAUGHT_HOST=127.0.0.1 \
+DEVCAUGHT_SMTP_ROUTING_MODE=local \
+DEVCAUGHT_DB_PATH=/tmp/devcaught-local-integration.sqlite \
+npm run dev
+```
+
+Then, from the separate project in that same WSL distribution:
+
+```bash
+node /path/to/devcaught/examples/local-integration.mjs
+```
+
+The example accepts `DEVCAUGHT_SMTP_PORT` and `DEVCAUGHT_VITE_PORT` overrides;
+DevCaught itself must be running on the same ports.
+
+The example writes three uniquely marked synthetic captures and verifies them
+through the Local Inbox API. It does not clear them or touch the SQLite file
+directly. Remove the disposable database only after stopping the DevCaught
+process that owns it.
 
 ## Environment variables
 
@@ -308,11 +398,11 @@ V0.2 is a local developer tool. It is useful the first time an app sends mail. I
 - Link detection
 
 **V0.2 — implemented**
-- Webhook inbox
-- Payment / order / transaction detection
+- Local SMTP and JSON webhook capture
+- Synthetic SMS capture
+- Email OTP and link detection
 
 **V0.3**
-- SMS simulation
 - Push notification simulation
 
 **Future**
