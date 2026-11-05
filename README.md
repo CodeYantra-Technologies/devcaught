@@ -139,6 +139,19 @@ DevCaught is intentionally small in V0.2.
 
 `127.0.0.1:1025` means "this same machine". If your app is deployed on Vercel or Supabase, `127.0.0.1` points to their server, not your laptop. DevCaught is for local development.
 
+## Experimental repository configurations
+
+The repository also contains separately selected candidate and integration
+configurations for authentication/private APIs, HTTPS, Postgres, and provider
+integrations. Examples include `compose.candidate-auth.yaml`,
+`compose.private-api-2j2.yaml`, `compose.https-candidate-2k2.yaml`,
+`compose.postgres-dev.yaml`, and the SMTP/SMS integration Compose files. These
+are experimental and are not part of the supported v0.2 local preview or its
+quick start. Explicitly selecting them can enable deferred features or contact
+external databases and providers; use only disposable resources and test
+credentials. They are not production deployment instructions. Hosted/shared
+functionality remains future work, and production remains NO-GO.
+
 ## Features
 
 - Loopback-only synthetic SMS and generic JSON webhook capture
