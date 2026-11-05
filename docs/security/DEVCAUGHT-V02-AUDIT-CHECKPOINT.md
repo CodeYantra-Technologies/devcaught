@@ -1,5 +1,10 @@
 # DevCaught V0.2 — Security Audit Checkpoint
 
+> **Historical checkpoint (2026-10-31):** Findings, configuration descriptions,
+> and pending items below record the repository state at that date. They are not
+> current setup instructions. For current v0.2 local-preview behavior, use the
+> README. This note does not change the production NO-GO decision.
+
 Date: 2026-10-31
 Branch: fix/devcaught-v02-security-audit
 Production decision: NO-GO

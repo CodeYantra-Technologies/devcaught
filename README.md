@@ -132,8 +132,10 @@ DevCaught is intentionally small in V0.2.
 - It does not deliver email to real users.
 - It does not run in Vercel/Supabase hosted environments via `127.0.0.1`.
 - It is not a cloud email service.
+- It is not production-ready. The v0.2 release is a local-development preview.
+- It does not include supported account authentication, shared accounts, or hosted inboxes; those are deferred to future work.
 - It does not send real SMS or push notifications. SMS capture is synthetic and
-  local-only; provider callbacks are a separate configured route.
+  local-only; provider callbacks are outside the supported v0.2 preview scope.
 
 `127.0.0.1:1025` means "this same machine". If your app is deployed on Vercel or Supabase, `127.0.0.1` points to their server, not your laptop. DevCaught is for local development.
 
@@ -215,8 +217,9 @@ the local capture policy.
 
 Private SMTP routing is a separate mode (`DEVCAUGHT_SMTP_ROUTING_MODE=private`).
 It verifies registered recipients repeatedly and stores only through the
-verified inbox scope. Network deployments must use this private mode; the local
-capture policy is not available to them.
+verified inbox scope. This mode is outside the supported v0.2 local-development
+preview; this release does not support network or hosted deployment. The local
+capture policy is unavailable on network binds.
 
 ### Example: Node.js / Nodemailer
 
@@ -347,6 +350,9 @@ message details.
 
 The synthetic SMS and generic JSON endpoints above are local development
 ingresses. They are not authenticated and do not verify webhook signatures.
+The v0.2 preview supports generic JSON webhook capture only; it does not verify
+provider signatures or deliver SMS. Separately configured provider callbacks
+are outside this local-preview scope.
 The HTTP listener on port `8025` is separate. Its generic `/api/webhooks`
 handler is currently fail-closed with `401 Unauthorized`; it is not the local
 capture route. The `/api/webhooks/twilio` provider callback is separate and
@@ -492,6 +498,9 @@ V0.2 is a local developer tool. It is useful the first time an app sends mail. I
 - Push notification simulation
 
 **Future**
+- Account authentication, shared accounts, hosted inboxes, and hosted service
+  (deferred; not part of v0.2)
+- PWA installation (deferred)
 - Test personas
 - Plugin / parser system
 - Optional self-hosted deployment
