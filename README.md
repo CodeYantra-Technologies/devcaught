@@ -6,11 +6,34 @@
 
 **Everything your app sends. Caught.**
 
-DevCaught is a local-first developer inbox that captures application messages during development and surfaces the information developers actually care about.
+> **Local-development preview · V0.2**
 
-Point your app at a local SMTP server. DevCaught stores the mail, detects OTPs and links, and puts the useful bits on a dashboard — without sending anything to the internet.
+DevCaught is a local development inbox for developers building and testing applications. Capture test email through SMTP, synthetic SMS, and JSON webhooks on your machine, then inspect messages and detected OTPs or links in a searchable dashboard. It helps you test signup, password reset, notification, and webhook flows without delivering messages to real users or providers.
 
 **CodeYantra Technologies · V0.2**
+
+### Features at a glance
+
+- Local SMTP email capture
+- Synthetic SMS capture (no carrier delivery)
+- Generic JSON webhook capture
+- Searchable Local Inbox with message details and channel filters
+
+### README navigation
+
+- [Quick start](#quick-start)
+- [What DevCaught is](#what-devcaught-is)
+- [What DevCaught is not](#what-devcaught-is-not)
+- [Features](#features)
+- [Requirements](#requirements)
+- [Local services and SMTP setup](#local-services)
+- [Local project integration](#local-project-integration)
+- [Local HTTP capture details](#local-http-request-requirements)
+- [Environment variables](#environment-variables)
+- [Scripts](#scripts)
+- [Project status and roadmap](#project-status)
+- [License](#license)
+- [Contributing](CONTRIBUTING.md)
 
 ---
 
