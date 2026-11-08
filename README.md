@@ -23,7 +23,7 @@ DevCaught is a local development inbox for developers building and testing appli
 
 ### Local Inbox
 
-![DevCaught Local Inbox showing a captured verification email](docs/screenshots/dashboard-overview.png)
+![DevCaught Local Inbox showing a captured verification email](screenshots/dashboard-overview.png)
 
 ### Email details
 
