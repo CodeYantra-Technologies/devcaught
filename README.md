@@ -8,7 +8,7 @@
 
 > **Local-development preview · V0.2**
 
-DevCaught is a local development inbox for developers building and testing applications. Capture test email through SMTP, synthetic SMS, and JSON webhooks on your machine, then inspect messages and detected OTPs or links in a searchable dashboard. It helps you test signup, password reset, notification, and webhook flows without delivering messages to real users or providers.
+DevCaught is a local development inbox for developers building and testing applications. Capture test email through SMTP, synthetic SMS, and JSON webhooks on your machine, then inspect messages and email OTPs or links in a searchable dashboard. It helps you test signup, password reset, notification, and webhook flows without delivering messages to real users or providers.
 
 **CodeYantra Technologies · V0.2**
 
@@ -19,9 +19,27 @@ DevCaught is a local development inbox for developers building and testing appli
 - Generic JSON webhook capture
 - Searchable Local Inbox with message details and channel filters
 
+## Preview
+
+### Local Inbox
+
+![DevCaught Local Inbox showing a captured verification email](docs/screenshots/dashboard-overview.png)
+
+### Email details
+
+![Captured verification email with a local OTP](docs/screenshots/email-details.png)
+
+### Synthetic SMS capture
+
+![Synthetic MaskChat SMS displayed with masked phone numbers](docs/screenshots/sms_capture.png)
+
+All examples use fictional addresses, synthetic phone numbers, and local-only
+capture. DevCaught does not deliver these messages to real users or carriers.
+
 ### README navigation
 
 - [Quick start](#quick-start)
+- [Preview](#preview)
 - [What DevCaught is](#what-devcaught-is)
 - [What DevCaught is not](#what-devcaught-is-not)
 - [Features](#features)
@@ -44,7 +62,7 @@ DevCaught requires **Node.js 22.13.0 or later**.
 ```bash
 git clone https://github.com/CodeYantra-Technologies/devcaught.git
 cd devcaught
-npm install
+npm ci
 DATABASE_URL= npm run dev
 ```
 
@@ -171,7 +189,9 @@ functionality remains future work, and production remains NO-GO.
 
 - **Node.js 22.13.0 or later** (Node 22 LTS)
 
-Verified on Node.js 22.23.2: the built-in `node:sqlite` driver works **without** `--experimental-sqlite` and **without** a native addon. That is why DevCaught does not depend on `better-sqlite3`.
+Verified on Node.js 22.23.4 with npm 10.9.9: the built-in `node:sqlite`
+driver works **without** `--experimental-sqlite` and **without** a native addon.
+That is why DevCaught does not depend on `better-sqlite3`.
 
 `npm install` does not compile C++. The same install works on Windows, macOS, and Linux from the official Node binaries.
 
@@ -303,6 +323,29 @@ The local synthetic HTTP ingresses are:
 | --- | --- | --- |
 | SMS | `http://127.0.0.1:8080/__devcaught/local-inbox/sms` | `{"sender":"+12025550123","recipient":"+12025550199","text":"Synthetic message"}` |
 | Webhook | `http://127.0.0.1:8080/__devcaught/local-inbox/webhooks` | Any valid JSON value, for example `{"event":"checkout.created","testId":"example-123"}` |
+
+With DevCaught running, send a synthetic SMS from another terminal:
+
+```bash
+curl -i \
+  -X POST 'http://127.0.0.1:8080/__devcaught/local-inbox/sms' \
+  -H 'Origin: http://127.0.0.1:8080' \
+  -H 'Content-Type: application/json' \
+  --data '{"sender":"+15005550006","recipient":"+15005550007","text":"Your MaskChat OTP is 482913"}'
+```
+
+A successful capture returns `HTTP/1.1 201 Created` with an `ok` response and
+the stored message ID. Refresh the Local Inbox and select the **SMS** filter.
+
+Send a generic JSON webhook in the same way:
+
+```bash
+curl -i \
+  -X POST 'http://127.0.0.1:8080/__devcaught/local-inbox/webhooks' \
+  -H 'Origin: http://127.0.0.1:8080' \
+  -H 'Content-Type: application/json' \
+  --data '{"event":"checkout.created","testId":"example-123"}'
+```
 
 Use fictional `example.test` email addresses and synthetic identifiers. The SMS
 sample uses fictional North American 555-01xx numbers. Do not send real phone
@@ -451,8 +494,10 @@ fails when anything else remains in the directory.
 ## How a message is caught
 
 ```text
-SMTP Receiver  →  Normalizer  →  Parsers  →  SQLite  →  REST API  →  Dashboard
-Test composer  ↗
+SMTP Receiver ───────────────┐
+Synthetic SMS ingress ───────┼→ Normalizer → SQLite → Local Inbox API → Dashboard
+Generic webhook ingress ─────┘
+Email/Test composer → Parsers (OTP + links) ─────────↗
 ```
 
 SMTP and the test composer both call `InboxService.ingest()`. The test composer proves parsing and storage. It does **not** prove that port 1025 is reachable — that is the SMTP status on Settings.
