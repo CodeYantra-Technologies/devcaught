@@ -27,11 +27,11 @@ DevCaught is a local development inbox for developers building and testing appli
 
 ### Email details
 
-![Captured verification email with a local OTP](docs/screenshots/email-details.png)
+![Captured verification email with a local OTP](screenshots/email-details.png)
 
 ### Synthetic SMS capture
 
-![Synthetic MaskChat SMS displayed with masked phone numbers](docs/screenshots/sms_capture.png)
+![Synthetic MaskChat SMS displayed with masked phone numbers](screenshots/sms_capture.png)
 
 All examples use fictional addresses, synthetic phone numbers, and local-only
 capture. DevCaught does not deliver these messages to real users or carriers.
