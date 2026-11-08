@@ -35,12 +35,11 @@ DevCaught is a local development inbox for developers building and testing appli
 
 ### Webhook capture
 
-![Post Webhook displayed with checkout created](screenshots/webhook_capture.png)
+![Captured checkout.created webhook](screenshots/webhook_capture.png)
 
-### All Filter List
+### Unified inbox
 
-![Post all displayed with all display on single list](screenshots/All.png)
-
+![Email, SMS, and webhook messages in the unified inbox](screenshots/All.png)
 
 All examples use fictional addresses, synthetic phone numbers, and local-only
 capture. DevCaught does not deliver these messages to real users or carriers.
