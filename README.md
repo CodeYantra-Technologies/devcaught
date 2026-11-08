@@ -33,6 +33,10 @@ DevCaught is a local development inbox for developers building and testing appli
 
 ![Synthetic MaskChat SMS displayed with masked phone numbers](screenshots/sms_capture.png)
 
+### Webhook capture
+
+![Post Webhook displayed with checkout created](screenshots/webhook_capture.png)
+
 All examples use fictional addresses, synthetic phone numbers, and local-only
 capture. DevCaught does not deliver these messages to real users or carriers.
 
