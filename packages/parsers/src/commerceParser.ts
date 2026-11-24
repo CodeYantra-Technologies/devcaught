@@ -1,5 +1,5 @@
 import type { Detection, Parser } from "./types.ts";
-import { messageCorpus } from "./htmlText.ts";
+import { MAX_PARSE_CHARS, messageCorpus } from "./htmlText.ts";
 
 type Kind = "payment" | "order" | "transaction";
 const kinds: Kind[] = ["payment", "order", "transaction"];
@@ -31,7 +31,7 @@ export const commerceParser: Parser = {
     };
     let json: unknown;
     try {
-      json = JSON.parse(input.textBody ?? "");
+      json = JSON.parse((input.textBody ?? "").slice(0, MAX_PARSE_CHARS));
     } catch {
       /* Email / plain text. */
     }
@@ -86,7 +86,7 @@ export const commerceParser: Parser = {
     } else {
       const text = messageCorpus(input);
       const pattern =
-        /\b(payment|order|transaction)\s*(?:id|number|reference|no\.?|#)\s*[:#=-]?\s*([a-z0-9][a-z0-9_-]{1,99})\b/gi;
+        /\b(payment|order|transaction)\s*(?:id|number|reference|no\.?|#)\s*(?:[:#=-]\s*)?([a-z0-9][a-z0-9_-]{1,99})\b/gi;
       for (const match of text.matchAll(pattern)) add(match[1].toLowerCase() as Kind, match[2]);
     }
     return found;

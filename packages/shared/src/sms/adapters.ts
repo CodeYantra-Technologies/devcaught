@@ -487,6 +487,10 @@ export function parseMsg91Inbound(
 /** ---- Signature verifiers ---- */
 
 function createHmacSha1(key: string, data: string): ReturnType<typeof createHmac> {
+  // Twilio's legacy X-Twilio-Signature protocol requires keyed HMAC-SHA1.
+  // SHA256 here would reject legitimate callbacks. This is not a password
+  // hash or an unkeyed SHA1 digest. Keep timing-safe verification below.
+  // https://www.twilio.com/docs/usage/security#validating-requests
   return createHmac("sha1", key).update(data, "utf8");
 }
 
@@ -545,7 +549,10 @@ export function twilioVerifySignature(
   if (typeof expected !== "string" || expected.length === 0) return false;
   const actual = twilioSignature(authToken, url, params);
   if (actual.length !== expected.length) return false;
-  return timingSafeEqual(Buffer.from(actual, "utf8"), Buffer.from(expected, "utf8"));
+  const actualBytes = Buffer.from(actual, "utf8");
+  const expectedBytes = Buffer.from(expected, "utf8");
+  if (actualBytes.length !== expectedBytes.length) return false;
+  return timingSafeEqual(actualBytes, expectedBytes);
 }
 
 /**

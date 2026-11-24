@@ -1,5 +1,6 @@
 import { requireGenericWebhookAccess } from "./access-policy.ts";
 import express from "express";
+import { peerRateLimitKey, RequestRateLimiter } from "./rate-limit.ts";
 import { normalizeWebhook, WEBHOOK_SIZE_LIMIT } from "../ingest/normalizeWebhook.ts";
 import type { DevCaughtRuntime } from "../runtime.ts";
 import { createTwilioWebhookHandler } from "../ingest/twilioWebhook.ts";
@@ -26,9 +27,21 @@ function send(res: express.Response, result: HandlerResult) {
   res.status(result.status).json(result.body ?? {});
 }
 
-export function createApiApp(runtime: DevCaughtRuntime): express.Express {
+export function createApiApp(runtime: DevCaughtRuntime, limiter = new RequestRateLimiter()): express.Express {
   const app = express();
   app.disable("x-powered-by");
+  app.set("trust proxy", false);
+  // Before body parsing, signature checks, authorization or persistence.
+  app.use((req, res, next) => {
+    if (req.path === "/health") { next(); return; }
+    const retry = limiter.check(peerRateLimitKey(req));
+    if (retry) {
+      res.set("retry-after", String(retry)).set("cache-control", "no-store")
+        .status(429).json({ error: "Too many requests" });
+      return;
+    }
+    next();
+  });
 
   // Dedicated authenticated Twilio webhook. Registered before the generic
   // catch-all so /webhooks/twilio is never shadowed by /webhooks/{*name};

@@ -78,6 +78,12 @@ describe("twilioVerifySignature — tampered form parameters", () => {
   });
 });
 
+it("rejects Unicode signatures with equal UTF-16 length but different byte lengths without throwing", () => {
+  const expected = twilioSignature("token", "https://example.test/callback", {});
+  const hostile = "é".repeat(expected.length);
+  assert.equal(twilioVerifySignature("token", "https://example.test/callback", {}, hostile), false);
+});
+
 describe("twilioVerifySignature — incorrect public URL", () => {
   const authToken = "sk_test_devcaught_sig_test_0001";
   const url = "https://mycompany.com/myapp";

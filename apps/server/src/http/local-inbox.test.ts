@@ -5,6 +5,7 @@ import type { ViteDevServer } from "vite";
 import type { DevCaughtRuntime } from "../runtime.ts";
 import { openInboxStore, type InboxStore } from "../store/sqlite.ts";
 import { createLocalInboxMiddleware } from "./local-inbox.ts";
+import { RequestRateLimiter } from "./rate-limit.ts";
 
 const path = "/__devcaught/local-inbox/health";
 
@@ -24,6 +25,7 @@ function fixture(options: {
   runtimeFailure?: boolean;
   getRuntime?: () => Promise<DevCaughtRuntime>;
   store?: InboxStore;
+  limiter?: RequestRateLimiter;
 } = {}) {
   const address = options.address ?? "127.0.0.1";
   const port = options.port ?? 8080;
@@ -42,6 +44,7 @@ function fixture(options: {
       return runtime;
     }),
     options.livePreview ?? false,
+    options.limiter,
   );
   return { middleware, port, runtime };
 }
@@ -148,6 +151,27 @@ test("allows only a fixed health response on an eligible IPv4 loopback listener"
   assert.deepEqual(JSON.parse(response.body), { ok: true, mode: "local-capture" });
   assert.equal(response.headers["cache-control"], "no-store");
   assert.equal(response.headers["access-control-allow-origin"], undefined);
+});
+
+test("local capture limits writes before runtime/body work, keeps reads and health available", async () => {
+  let calls = 0;
+  let now = 1000;
+  const { middleware, runtime } = fixture({
+    limiter: new RequestRateLimiter({ limit: 2, now: () => now }),
+    getRuntime: async () => { calls++; return runtime; },
+  });
+  const post = { url: "/__devcaught/local-inbox/sms", method: "POST",
+    origin: "http://127.0.0.1:8080", contentType: "application/json", body: "{}" };
+  assert.equal((await request(middleware, post)).status, 400);
+  assert.equal((await request(middleware, post)).status, 400);
+  const blocked = await request(middleware, post);
+  assert.equal(blocked.status, 429);
+  assert.equal(blocked.headers["retry-after"], "60");
+  assert.equal(calls, 2);
+  assert.equal((await request(middleware)).status, 200);
+  assert.equal((await request(middleware, { ...post, forwardedFor: "127.0.0.2" })).status, 403);
+  now += 60_000;
+  assert.equal((await request(middleware, post)).status, 400);
 });
 
 test("redirects the root to the local dashboard only when the health capability is available", async () => {

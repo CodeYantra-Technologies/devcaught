@@ -1,14 +1,16 @@
 import type { Detection, ParseInput } from "./types.ts";
-import { htmlToText, messageCorpus } from "./htmlText.ts";
+import { extractHtml, MAX_URL_CHARS, messageCorpus } from "./htmlText.ts";
 
 const URL_RE = /https?:\/\/[^\s<>"'\\]+/gi;
-const HREF_RE = /href\s*=\s*["'](https?:\/\/[^"']+)["']/gi;
 
 function stripTrailingPunctuation(url: string): string {
-  return url.replace(/[).,;:!?]+$/g, "");
+  let end = url.length;
+  while (end > 0 && ").,;:!?".includes(url[end - 1])) end--;
+  return url.slice(0, end);
 }
 
 function isSafeHttpUrl(value: string): boolean {
+  if (value.length > MAX_URL_CHARS) return false;
   try {
     const parsed = new URL(value);
     return parsed.protocol === "http:" || parsed.protocol === "https:";
@@ -35,8 +37,10 @@ export const linkParser = {
 
     for (const url of collect(messageCorpus(input), URL_RE)) urls.add(url);
     if (input.htmlBody) {
-      for (const url of collect(input.htmlBody, HREF_RE, 1)) urls.add(url);
-      for (const url of collect(htmlToText(input.htmlBody), URL_RE)) urls.add(url);
+      for (const href of extractHtml(input.htmlBody).hrefs) {
+        const url = stripTrailingPunctuation(href);
+        if (isSafeHttpUrl(url)) urls.add(url);
+      }
     }
 
     return [...urls].map((value) => ({

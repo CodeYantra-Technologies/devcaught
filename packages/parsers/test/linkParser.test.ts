@@ -9,8 +9,7 @@ describe("linkParser", () => {
         "Reset: https://veltrix.test/reset/abc123 and http://localhost:3000/ok.",
     });
     const values = detections.map((d) => d.value);
-    assert.ok(values.includes("https://veltrix.test/reset/abc123"));
-    assert.ok(values.includes("http://localhost:3000/ok"));
+    assert.deepEqual(values, ["https://veltrix.test/reset/abc123", "http://localhost:3000/ok"]);
   });
 
   it("extracts href URLs from HTML", () => {

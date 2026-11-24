@@ -1,9 +1,16 @@
+import { limitWebRequest } from "../../../apps/server/src/http/rate-limit.ts";
+
 /** Narrow HTTP surface: no account-management or public signup endpoints. */
 export async function handleAuthRequest(
   request: Request,
   auth: { handler(request: Request): Promise<Response> },
 ): Promise<Response> {
   const path = new URL(request.url).pathname;
+  // Sign-out and session reads are control operations. Credential attempts and
+  // unknown paths use the authentication budget and cannot spend control quota.
+  const budget = path === "/api/auth/sign-out" || path === "/api/auth/get-session" ? "control" : "authentication";
+  const limited = limitWebRequest(budget, request);
+  if (limited) return limited;
   const methods: Record<string, string> = {
     "/api/auth/register-invitation": "POST",
     "/api/auth/sign-in/email": "POST",

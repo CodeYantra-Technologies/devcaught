@@ -29,6 +29,7 @@
     "test": "node --test 'scripts/**/*.test.mjs' && node --experimental-strip-types --test src/lib/auth/auth-config.test.ts packages/shared/test/sms.test.ts packages/shared/test/sms/phone.test.ts packages/shared/test/sms/adapters.test.ts apps/server/src/ingest/sms/dedupe.test.ts packages/parsers/test/*.test.ts apps/server/src/config.test.ts apps/server/src/store/sqlite.test.ts apps/server/src/smtp/smtp.test.ts apps/server/src/http/webhook.test.ts apps/server/src/http/security.test.ts apps/server/src/ingest/twilioWebhook.test.ts",
     "test:devcaught": "node --experimental-strip-types --test packages/parsers/test/*.test.ts apps/server/src/config.test.ts apps/server/src/store/sqlite.test.ts apps/server/src/smtp/smtp.test.ts apps/server/src/http/webhook.test.ts",
     "test:local-capture": "node --experimental-strip-types --test apps/server/src/vite-local-capture-plugin.test.ts apps/server/src/http/local-inbox.test.ts",
+    "test:security": "node --experimental-strip-types --test packages/parsers/test/*.test.ts apps/server/src/http/rate-limit.test.ts apps/server/src/http/local-inbox.test.ts apps/server/src/http/security.test.ts apps/server/src/http/access-policy.test.ts apps/server/src/ingest/sanitizePreview.test.ts apps/server/src/ingest/normalizeWebhook.test.ts apps/server/src/ingest/twilioWebhook.test.ts packages/shared/test/sms/adapters.signature.test.ts src/components/local-inbox/LocalInboxBody.test.ts",
     "send:test-mail": "node scripts/send-test-mail.mjs",
     "lint": "eslint .",
     "format": "prettier --write ."
@@ -114,7 +115,7 @@
     "playwright": "^1.62.0",
     "prettier": "^3.4.0",
     "typescript": "^5.7.0",
-    "typescript-eslint": "^8.56.1",
+    "typescript-eslint": "^8.74.0",
     "vite": "^8.2.0"
   }
 }
