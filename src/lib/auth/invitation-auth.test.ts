@@ -85,7 +85,9 @@ async function fixture(t: TestContext, failAccount = false) {
   return { db, sql, auth, send, register, invite, login, count, ownershipDb };
 }
 
-describe("invitation-only authentication (isolated PGlite, not PostgreSQL concurrency proof)", { timeout: 30_000 }, () => {
+// Twenty independent WASM database fixtures take over 30 seconds even in an
+// isolated run. Bound the complete suite without cancelling valid later cases.
+describe("invitation-only authentication (isolated PGlite, not PostgreSQL concurrency proof)", { timeout: 180_000 }, () => {
   it("blocks built-in signup and registration without an invitation", async t => {
     const h = await fixture(t);
     assert.equal((await h.send("sign-up/email", { email, password, name: "Public" })).status, 404);

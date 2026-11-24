@@ -1,8 +1,11 @@
 import { ensureRuntime } from "../runtime.ts";
+import { limitWebRequest } from "./rate-limit.ts";
 import { normalizeWebhook, WEBHOOK_SIZE_LIMIT } from "../ingest/normalizeWebhook.ts";
 
 /** Stream with a cap: Content-Length is optional and cannot be trusted. */
 export async function captureWebhook(request: Request): Promise<Response> {
+  const limited = limitWebRequest("capture", request);
+  if (limited) return limited;
   if (
     request.headers.has("content-encoding") &&
     request.headers.get("content-encoding") !== "identity"

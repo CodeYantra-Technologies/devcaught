@@ -11,6 +11,8 @@ import { appEnvPlugin } from "./scripts/app-env-plugin.mjs";
 import { isMigrationFile } from "./scripts/migration-plan.mjs";
 import { devcaughtPlugin } from "./apps/server/src/vite-plugin.ts";
 import { devServerHost } from "./scripts/dev-server-host.mjs";
+// @ts-expect-error JS helper alongside the TS vite config
+import { removeCopiedGrokAssets } from "./scripts/exclude-historical-grok-assets.mjs";
 
 /** The files `src/lib/db.ts` globs — same directory, same non-recursive scope. */
 function hasGlobbedMigrations(root: string): boolean {
@@ -30,6 +32,33 @@ function hasGlobbedMigrations(root: string): boolean {
  * migrations — no schema to apply — skips it entirely rather than paying for a
  * PGLite instance it never queries.
  */
+/**
+ * `public/` is copied verbatim into the production client output. Historical
+ * `public/__grok` assets are not referenced by this app. Remove only the copies
+ * under build directories. Never delete `public/__grok` or `.grok`.
+ */
+function excludeHistoricalGrokAssets(): Plugin {
+  let root = "";
+  let outDir = "";
+  return {
+    name: "devcaught:exclude-historical-grok-assets",
+    apply: "build",
+    enforce: "post",
+    configResolved(config) {
+      root = config.root;
+      outDir = config.build.outDir;
+    },
+    closeBundle() {
+      const seen = new Set<string>();
+      for (const dir of [outDir, join(root, ".output"), join(root, "dist"), join(root, ".vercel")]) {
+        if (seen.has(dir)) continue;
+        seen.add(dir);
+        removeCopiedGrokAssets(dir, root);
+      }
+    },
+  };
+}
+
 function pgliteBootstrapPlugin(): Plugin {
   return {
     name: "app-builder:pglite-bootstrap",
@@ -85,5 +114,6 @@ export default defineConfig(({ command, isPreview }) => ({
         ]
       : []),
     viteReact(),
+    excludeHistoricalGrokAssets(),
   ],
 }));

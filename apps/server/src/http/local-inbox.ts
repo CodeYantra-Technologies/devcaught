@@ -5,6 +5,7 @@ import { ensureRuntime, type DevCaughtRuntime } from "../runtime.ts";
 import { normalizeWebhook, WEBHOOK_SIZE_LIMIT } from "../ingest/normalizeWebhook.ts";
 import { normalizeSms, MAX_SMS_BODY } from "../../../../packages/shared/src/sms/adapters.ts";
 import type { SmsEvent } from "../../../../packages/shared/src/types.ts";
+import { peerRateLimitKey, RequestRateLimiter } from "./rate-limit.ts";
 
 const namespace = "/__devcaught/local-inbox";
 const capabilityPath = `${namespace}/health`;
@@ -334,8 +335,10 @@ export function createLocalInboxMiddleware(
   server: ViteDevServer,
   getRuntime: RuntimeProvider = ensureRuntime,
   livePreview = process.env.DEVCAUGHT_LIVE_PREVIEW === "1",
+  ingressLimiter = new RequestRateLimiter({ limit: 600 }),
 ): LocalInboxMiddleware {
   let active = true;
+  const readLimiter = new RequestRateLimiter({ limit: 1800 });
 
   const handler = (req: IncomingMessage, res: ServerResponse, next: Connect.NextFunction): void => {
     const target = req.url ?? "";
@@ -402,6 +405,15 @@ export function createLocalInboxMiddleware(
       if ((isIngress && req.method !== "POST") || (!isIngress && req.method !== "GET")) {
         send(res, 405, { ok: false, error: "Method not allowed" });
         return;
+      }
+
+      if (route.kind !== "health") {
+        const retry = (isIngress ? ingressLimiter : readLimiter).check(peerRateLimitKey(req));
+        if (retry) {
+          res.setHeader("retry-after", String(retry));
+          send(res, 429, { ok: false, error: "Too many requests" });
+          return;
+        }
       }
 
       let runtime: DevCaughtRuntime;

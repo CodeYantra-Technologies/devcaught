@@ -1,7 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { handleAuthRequest } from "../../../lib/auth/http-handler.ts";
 
-async function handle({ request }: { request: Request }) {
+/** Auth unavailable or disabled stays 503. Rate limits run only after that. */
+export async function handleAuthRoute(request: Request): Promise<Response> {
   try {
     const { auth, authConfigured } = await import("../../../lib/auth/server");
     if (!authConfigured) return Response.json({ error: "Authentication unavailable" }, { status: 503 });
@@ -12,5 +13,5 @@ async function handle({ request }: { request: Request }) {
 }
 
 export const Route = createFileRoute("/api/auth/$")({
-  server: { handlers: { GET: handle, POST: handle } },
+  server: { handlers: { GET: ({ request }) => handleAuthRoute(request), POST: ({ request }) => handleAuthRoute(request) } },
 });

@@ -2,6 +2,7 @@ import { createPrivateInboxApi, inboxUnavailable, type PrivateInboxOperation } f
 import { PRIVATE_INBOX_POSTGRES_VERIFIED } from "./private-inbox-release.ts";
 import type { InboxStore } from "../../../apps/server/src/store/sqlite.ts";
 import { privateInboxTargetReady } from "./private-inbox-readiness.ts";
+import { limitWebRequest } from "../../../apps/server/src/http/rate-limit.ts";
 
 // Independent of the ingestion runtime: never starts listeners or global retention.
 const globalStore = globalThis as typeof globalThis & { __devcaughtPrivateApiStore__?: InboxStore };
@@ -23,8 +24,11 @@ async function openPrivateApiStore(): Promise<InboxStore> {
 }
 
 export async function handlePrivateInboxRequest(request: Request, operation: PrivateInboxOperation, id?: string) {
-  // Check before importing the auth singleton or opening any runtime database.
+  // Fail closed before admission control. An exhausted budget must not turn
+  // this release guard into HTTP 429. The check stays ahead of auth and storage.
   if (!PRIVATE_INBOX_POSTGRES_VERIFIED) return inboxUnavailable();
+  const limited = limitWebRequest("private-api", request);
+  if (limited) return limited;
   return createPrivateInboxApi({
     postgresVerified: PRIVATE_INBOX_POSTGRES_VERIFIED,
     resolveInbox: async () => {
